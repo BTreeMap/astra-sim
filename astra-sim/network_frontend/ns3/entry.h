@@ -589,7 +589,20 @@ int setup_ns3_simulation(string network_configuration) {
             return -1;
         }
     }
-    return SetupNetwork(qp_finish, qp_fail, recovery_verdict, recovery_domain)
-        ? 0
-        : -1;
+    if (!SetupNetwork(qp_finish, qp_fail, recovery_verdict, recovery_domain)) {
+        return -1;
+    }
+    // The experiment's scale sizes the forgiveness ledger and bounds every
+    // rank index it accepts, and the topology decides how many hosts exist.
+    // A mismatch is silent otherwise: ranks above the ledger's width forgive
+    // nothing, and the arm reads as a weak treatment effect.
+    const uint32_t host_count = static_cast<uint32_t>(serverAddress.size());
+    if (AstraSimNs3::experiment_config.rank_count != 0 &&
+        AstraSimNs3::experiment_config.rank_count != host_count) {
+        cerr << "Experiment scale.ranks "
+             << AstraSimNs3::experiment_config.rank_count
+             << " does not match the topology's " << host_count << " hosts\n";
+        return -1;
+    }
+    return 0;
 }

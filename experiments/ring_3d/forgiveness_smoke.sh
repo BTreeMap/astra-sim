@@ -53,3 +53,8 @@ uv --project "$REPOSITORY_ROOT" run --locked python \
   "$SCRIPT_DIR/check_forgiveness.py" "$OUTPUT" "$ADMISSION_OUTPUT" \
   --rerun "$RERUN_OUTPUT" --race "$RACE_OUTPUT" \
   --congestion-neutral "$DCQCN_OUTPUT"
+
+# The same inputs with one field broken per case. Each must be refused by
+# name, and none may leave telemetry behind.
+uv --project "$REPOSITORY_ROOT" run --locked python \
+  "$SCRIPT_DIR/check_refusals.py" "$OUTPUT"

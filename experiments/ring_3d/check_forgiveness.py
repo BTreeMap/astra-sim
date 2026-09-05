@@ -73,6 +73,21 @@ def check(recovery_dir: Path, admission_dir: Path) -> list[str]:
             "convert a transfer into a failure"
         )
 
+    # The hash identifies the operation, not the decision taken on it, so a
+    # recovery row must carry the same one an admission row would. Zero here
+    # means the domain branch ran before the hash and the cross-arm join is
+    # broken for a reason that is not the domain.
+    unhashed = [
+        flow
+        for flow in flows
+        if flow["admission_eligible"] == "true" and flow["decision_hash"] == "0"
+    ]
+    if unhashed:
+        failures.append(
+            f"{len(unhashed)} eligible flows carry decision_hash 0, so the "
+            "recovery arm cannot be joined against an admission arm"
+        )
+
     forgiven_total = 0
     clr_steps = _clr_steps(recovery_dir)
     for flow in flows:

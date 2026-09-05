@@ -486,6 +486,7 @@ int main(int argc, char* argv[]) {
         AstraSimNs3::configure_experiment(experiment_configuration,
                                           experiment_output_dir);
         AstraSimNs3::configure_clr_mask(clr_mask_configuration);
+        AstraSimNs3::validate_experiment_contract();
     } catch (const exception& error) {
         cerr << "Unable to configure experiment: " << error.what() << "\n";
         Simulator::Destroy();
@@ -496,6 +497,16 @@ int main(int argc, char* argv[]) {
     if (auto ok = setup_ns3_simulation(network_configuration); ok == -1) {
         std::cerr << "Fail to setup ns3 simulation." << std::endl;
         return -1;
+    }
+
+    // Telemetry last: a refused arm must not leave a run directory holding
+    // headers and no rows, which every reader takes for a started run.
+    try {
+        AstraSimNs3::open_experiment_telemetry();
+    } catch (const exception& error) {
+        cerr << "Unable to open experiment telemetry: " << error.what() << "\n";
+        Simulator::Destroy();
+        return 1;
     }
 
     // Tell workload layer to schedule first events.

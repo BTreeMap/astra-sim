@@ -186,6 +186,9 @@ struct ExperimentConfig {
     uint32_t microburst_trigger_step = 2;
     std::vector<MicroburstFlow> microburst_flows;
     bool microburst_triggered = false;
+    // Where the telemetry will be written. Empty when no experiment is
+    // configured. The files are not opened here: see open_experiment_telemetry.
+    std::string telemetry_output_dir;
 };
 
 struct SheddingDecision {
@@ -490,6 +493,12 @@ inline SheddingDecision evaluate_shedding(const AstraSim::sim_request& request,
     }
 
     decision.eligible = true;
+    // Before the domain branch: the hash identifies the operation, not the
+    // decision taken on it, and every arm's flow_events.csv is joined on it.
+    // Computing it only on the admission path left recovery rows carrying
+    // zero, so a join across arms differed for a reason that is not the
+    // domain.
+    decision.decision_hash = stable_operation_hash(request, src, dst, tag);
     // The recovery domain spends the same budget after a trim, so shedding at
     // admission as well would double-spend it. Eligibility is still recorded:
     // it is what makes a flow forgivable later, and it keeps the two domains'
@@ -497,7 +506,6 @@ inline SheddingDecision evaluate_shedding(const AstraSim::sim_request& request,
     if (experiment_config.domain == SheddingDomain::Recovery) {
         return decision;
     }
-    decision.decision_hash = stable_operation_hash(request, src, dst, tag);
     if (experiment_config.clr_mask_configured) {
         const auto clr = experiment_config.clr_mask_by_step.find(
             request.operation.training_step);
@@ -1034,7 +1042,41 @@ inline void configure_experiment(const std::string& configuration_path,
         }
     }
 
-    experiment_telemetry.initialize(output_dir);
+    experiment_config.telemetry_output_dir = output_dir;
+}
+
+// Refusals the configuration alone cannot make, because the CLR mask arrives
+// on its own command-line argument after the experiment is parsed. Run once,
+// after both.
+inline void validate_experiment_contract() {
+    if (!experiment_config.enabled ||
+        experiment_config.domain != SheddingDomain::Recovery) {
+        return;
+    }
+    // Recovery reads the mask per trim and answers Pull for a step it does
+    // not find. Without the mask the whole arm forgives nothing and reads as
+    // "the mechanism did nothing", which is indistinguishable from a real
+    // negative result. evaluate_shedding throws on the same miss, so the two
+    // consumers of one map now refuse on the same terms.
+    if (!experiment_config.clr_mask_configured) {
+        throw std::runtime_error(
+            "recovery domain requires --clr-mask-configuration");
+    }
+    for (uint32_t step = 1; step <= experiment_config.step_count; ++step) {
+        if (experiment_config.clr_mask_by_step.count(step) == 0) {
+            throw std::runtime_error(
+                "CLR mask does not define training step " +
+                std::to_string(step) + ", which the recovery domain requires");
+        }
+    }
+}
+
+// Opened only once ns-3 setup has succeeded. A refused arm must not leave a
+// run directory carrying headers and no rows, which reads as started.
+inline void open_experiment_telemetry() {
+    if (!experiment_config.telemetry_output_dir.empty()) {
+        experiment_telemetry.initialize(experiment_config.telemetry_output_dir);
+    }
 }
 
 inline void finalize_experiment_telemetry() {
