@@ -151,4 +151,8 @@ the 8-rank fixture, DCQCN alone takes W from 25.9 to 0.117.
    bounded loss has no purchase on this transport; paper is then the
    regime table plus the negative result.
 6. After the map: matched dose by DP-share wave at its worst point, then
-   forgive comparison there if the tail is repair-driven.
+   forgive comparison there if the tail is repair-driven. That comparison
+   reads only against its own arms: `llama3_70b_32_direct_forgive` runs
+   selective repair and the anchor above ran go-back-N, so any number set
+   beside this readout's moves the recovery domain and the repair
+   algorithm together.

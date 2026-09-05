@@ -76,11 +76,14 @@ class CongestionControlConfig:
 
 ## 2. Transitions (pure core)
 
-Receiver, on trim arrival for range r = [seq, seq+len), rxQp q:
+Receiver, on trim arrival for range r = [seq, seq+len), rxQp q. `len` is
+the unsettled length: the bytes of r below `ReceiverNextExpectedSeq` or
+inside `m_ooo_ranges` are already held, and charging for them would spend
+budget twice. A trim with no unsettled byte is a duplicate:
 
 | State of r | Event | Result |
 | --- | --- | --- |
-| Received | trim | ACK (duplicate); no ledger change |
+| Received or partly received with no unsettled byte | trim | ACK (duplicate); no ledger change |
 | Pulled | trim | resend PULL with the same priority; idempotent |
 | Forgiven | trim | ACK; no charge |
 | Unknown | trim, verdict Pull / PullPriority | record in m_pulled_ranges; SendTrimNack(priority) |
@@ -136,9 +139,12 @@ so the step tag in the 2026-08-22 plan is dropped.
 | Ledger memory | ranks x steps | 51200 cells x 32 B = 1.6 MB | vector |
 | analyze per-step spans | 4e5 flows | O(n) single pass | dict by (step, node) |
 
-Hot-path rule: only trims and ACK emission are touched; measure one
-liveness checkpoint of `llama3_70b_32_direct` before and after on the
-same binary recipe and report `wall_ms_delta` at equal simulated time.
+Hot-path rule: only trims and ACK emission are touched; measure
+`llama3_70b_32_direct_forgive` in both domains, one process each on the
+same binary, and report `wall_ms_delta` at equal simulated time. The
+profile must run selective repair and ftd trimming in both arms, or the
+trim fork is never entered and the measurement covers struct growth
+only.
 
 ## 5. Rejected alternative
 
@@ -164,6 +170,10 @@ forgiveness needs zero sender change and one bit on the reverse path.
   direct2/direct7 x 2:1/4:1, 64 ranks), gate `regime_map`, single arm;
   `forgiveness_smoke_8`, gate `always`; `llama3_70b_32_direct_forgive`
   and the `no_incast_8` SR variant, gate `forgive`.
+  `llama3_70b_32_direct_forgive` adds `selective_repair: true`, which
+  `llama3_70b_32_direct` does not carry, so the four arms inside the
+  forgive run are matched and a comparison drawn against run #117 moves
+  selective repair and the recovery domain together.
 
 ## 7. Open questions, defaults assumed
 
@@ -200,13 +210,28 @@ forgiveness needs zero sender change and one bit on the reverse path.
   used, so the queue-pair layout changes once and the fork's pace A/B
   reads as behaviour rather than struct growth.
 
-Pace A/B, `llama3_70b_32_direct`, same machine and build recipe, one
-process each. Before (superproject 63ef7c2, submodule cdfa53e):
-`wall_ms_delta` 80976 ms at `simulated_time_ns` 20000000 and 81408 ms at
-30000000. After: 83219 and 83442, repeated at 84448 and 83178.
-`events_delta` is identical to the byte at both checkpoints (9187465 and
-9182473), so the cost is per event, not extra work: 2.5% to 3.0% against
-a 1.5% run-to-run spread.
+Pace A/B, first attempt, `llama3_70b_32_direct`, same machine and build
+recipe, one process each. Before (superproject 63ef7c2, submodule
+cdfa53e): `wall_ms_delta` 80976 ms at `simulated_time_ns` 20000000 and
+81408 ms at 30000000. After: 83219 and 83442, repeated at 84448 and
+83178. `events_delta` is identical to the byte at both checkpoints
+(9187465 and 9182473), so the cost is per event, not extra work: 2.5% to
+3.0% against a 1.5% run-to-run spread. That profile carries no
+`transport_recovery.selective_repair`, so both binaries ran go-back-N
+with `Forgiveness false` and never entered the fork; the 2.5% to 3.0% is
+struct growth plus one `empty()` test plus one bool test, and the
+per-trim cost was unmeasured.
+
+Pace A/B, second attempt, `llama3_70b_32_direct_forgive`, admission
+against recovery, both selective repair, one process each capped at
+1500 s of wall clock. At `simulated_time_ns` 150000000 the recovery arm
+had spent 1371903 ms of wall against admission's 1399678 ms, 1.98% less,
+over 2.53% fewer events (141550730 against 145231178). Forgiving removes
+repair work, so the arm that pays for the fork does less: 9.692 us per
+event against 9.638, 0.56% more, which is the fork's cost and is inside
+the run-to-run spread. Trims per simulated second at the last flushed
+summary: 830244 admission against 707728 recovery, of which 51639
+forgiven ranges per simulated second.
 
 ## 9. Audit findings and fix plan (2026-09-05)
 
