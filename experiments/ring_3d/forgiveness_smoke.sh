@@ -12,6 +12,14 @@ RERUN_OUTPUT="$REPOSITORY_ROOT/runs/ring_3d/forgiveness_smoke_8_rerun"
 RACE_OUTPUT="$REPOSITORY_ROOT/runs/ring_3d/forgiveness_race_8"
 DCQCN_OUTPUT="$REPOSITORY_ROOT/runs/ring_3d/forgiveness_dcqcn_8"
 
+RANGE_ALGEBRA="$REPOSITORY_ROOT/extern/network_backend/ns-3/build/scratch/ns3.42-RdmaRangeAlgebra"
+
+# The receive-side range algebra first. Its straddle and partial-overlap
+# branches cannot be reached through the switch, because every packet and
+# every repair segment starts at a packet boundary, so no run below exercises
+# them and this fixture is the only thing that does.
+"$RANGE_ALGEBRA"
+
 uv --project "$REPOSITORY_ROOT" run --locked python "$SCRIPT_DIR/run.py" \
   --profile "$SCRIPT_DIR/profiles/forgiveness_smoke_8.json" \
   --output "$OUTPUT" --clean

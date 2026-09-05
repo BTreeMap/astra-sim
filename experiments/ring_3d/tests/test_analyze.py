@@ -396,7 +396,8 @@ class Ring3DAnalysisTests(unittest.TestCase):
             (ns3 / "transport_summary.csv").write_text(
                 "event,plane,event_count,total_bytes\n"
                 "rto_fired,control,3,0\n"
-                "cnp_taken,control,5,0\n",
+                "cnp_taken,control,5,0\n"
+                "clipped_trim,control,2,0\n",
                 encoding="utf-8",
             )
 
@@ -412,6 +413,7 @@ class Ring3DAnalysisTests(unittest.TestCase):
         transport = summary["ns3_observability"]["transport"]
         self.assertEqual(transport["rto_fired_count"], 3)
         self.assertEqual(transport["cnp_taken_count"], 5)
+        self.assertEqual(transport["clipped_trim_count"], 2)
 
     def test_host_transport_event_must_ride_the_control_plane(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

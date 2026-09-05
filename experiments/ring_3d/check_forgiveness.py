@@ -36,6 +36,29 @@ def _clr_steps(run_dir: Path) -> frozenset[str]:
         )
 
 
+def _charged_equals_absorbed(
+    flows: list[dict[str, str]], summary: dict[str, Any]
+) -> list[str]:
+    """The two sinks that count forgiven bytes must agree.
+
+    The transport reports every forgiven range as a ``trim_forgiven`` event as
+    it happens; the frontend charges the same clipped length to the flow record
+    the row is written from. A disagreement means a charged flow lost its row,
+    or the two sinks clipped the range differently.
+    """
+    charged = sum(int(flow["forgiven_bytes"]) for flow in flows)
+    transport = summary["ns3_observability"]["transport"]
+    if transport.get("status") != "available":
+        return ["transport event summary is unavailable, so nothing cross-checks"]
+    absorbed = int(transport["trim_forgiven_bytes"])
+    if charged != absorbed:
+        return [
+            f"flows were charged {charged} B but the transport forgave "
+            f"{absorbed} B"
+        ]
+    return []
+
+
 def check(recovery_dir: Path, admission_dir: Path) -> list[str]:
     """Return every violated property, empty when the run is sound."""
     failures: list[str] = []
@@ -67,6 +90,7 @@ def check(recovery_dir: Path, admission_dir: Path) -> list[str]:
             failures.append("delivered bytes do not exclude the forgiven bytes")
     if forgiven_total == 0:
         failures.append("recovery run forgave nothing; the fork never fired")
+    failures.extend(_charged_equals_absorbed(flows, _summary(recovery_dir)))
 
     law = _summary(recovery_dir)["forgiveness"]["ledger_law"]
     if law["status"] != "verified":
@@ -89,6 +113,12 @@ def check(recovery_dir: Path, admission_dir: Path) -> list[str]:
         f"{admission_health['offered_physical_bytes']} offered bytes against "
         f"{health['offered_physical_bytes']}"
     )
+    # Reported, not gated. The transport segments every packet and every
+    # repair from a packet boundary, so no trim it produces today is partly
+    # settled and the count is zero; a nonzero count means the segmentation
+    # changed and the clip is now load-bearing.
+    transport = _summary(recovery_dir)["ns3_observability"]["transport"]
+    print(f"partly settled trims: {transport.get('clipped_trim_count', 0)}")
     return failures
 
 
@@ -97,9 +127,11 @@ def check_race(run_dir: Path) -> list[str]:
 
     A retransmission timeout an order below the round trip resends ranges the
     receiver is still deciding about, so duplicate data arrives for ranges that
-    were forgiven while it was in flight. The transfer must still complete, the
-    duplicate must not re-credit anything, and the budget must not move
-    backwards.
+    were forgiven while it was in flight. The timeout also re-segments the
+    repair stream, so a trim can straddle the cumulative sequence or overlap a
+    range already accepted. The transfer must still complete, the duplicate
+    must not re-credit anything, the budget must not move backwards, and a
+    partly settled range must be charged for its new bytes only.
     """
     failures: list[str] = []
     flows = _flows(run_dir)
@@ -108,6 +140,7 @@ def check_race(run_dir: Path) -> list[str]:
 
     if recovery["timeout_count"] == 0:
         failures.append("race fixture fired no retransmission timeout")
+    failures.extend(_charged_equals_absorbed(flows, summary))
     if recovery["retransmitted_bytes"] == 0:
         failures.append("race fixture retransmitted nothing")
     if summary["network_health"]["wire_per_offered"] <= 1.0:

@@ -642,7 +642,9 @@ class _FctJoin:
         }
 
 
-_HOST_TRANSPORT_EVENTS: Final = frozenset({"rto_fired", "cnp_taken"})
+_HOST_TRANSPORT_EVENTS: Final = frozenset(
+    {"rto_fired", "cnp_taken", "clipped_trim"}
+)
 
 
 def _summarize_transport_events(ns3_dir: Path) -> dict[str, Any]:
@@ -688,6 +690,10 @@ def _summarize_transport_events(ns3_dir: Path) -> dict[str, Any]:
         # retransmission timeout is a missing ACK, a rate cut is a CNP.
         "rto_fired",
         "cnp_taken",
+        # A trim whose range the receiver already partly holds, so the verdict
+        # was asked about fewer bytes than the packet carried. Those bytes were
+        # delivered, so the event carries a count and no bytes.
+        "clipped_trim",
     }
     # Switch conversions only: trim_forgiven is the receiver's answer to one,
     # not a second conversion, and adding it would double-count the payload.
@@ -788,6 +794,7 @@ def _summarize_transport_events(ns3_dir: Path) -> dict[str, Any]:
         },
         "rto_fired_count": events["rto_fired"],
         "cnp_taken_count": events["cnp_taken"],
+        "clipped_trim_count": events["clipped_trim"],
         "trim_forgiven_count": events["trim_forgiven"],
         "trim_forgiven_bytes": bytes_by_event["trim_forgiven"],
     }

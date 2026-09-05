@@ -204,3 +204,30 @@ process each. Before (superproject 63ef7c2, submodule cdfa53e):
 `events_delta` is identical to the byte at both checkpoints (9187465 and
 9182473), so the cost is per event, not extra work: 2.5% to 3.0% against
 a 1.5% run-to-run spread.
+
+## 9. Audit findings and fix plan (2026-09-05)
+
+Two read-only audits of the build (C++ chain, Python and CI chain). Ranked
+by severity times reach; each row is one refactor. Verdict path is total,
+config refusal holds at four layers, regime-map profiles match their
+names, matrix gates and plan-step selection are correct.
+
+| # | Location | Finding | Fix |
+| --- | --- | --- | --- |
+| 1 | rdma-hw.cc ReceiveTrimmedData | `GetRxQp(..., create=true)` on a trim arriving after QpComplete resurrects a zombie rxQp; a later flow reusing the port completes with no bytes moved | `GetRxQp(..., false)`; on null, plain `SendTrimNack` |
+| 2 | rdma-queue-pair.cc IsRangeSettled, FindPulledRange, PruneSettledPulls | Range identity by exact start; a trim partially overlapping a settled range or straddling `ReceiverNextExpectedSeq` is charged in full while fewer bytes are absorbed; prune stops at first unsettled entry | Clip `[start, end)` against `ReceiverNextExpectedSeq` and `m_ooo_ranges`, charge the clipped length only; prune by `lower_bound` scan |
+| 3 | ExperimentConfig.hh analyze.py | Ledger law computed twice with different rounding: C++ integer `spent * kDecisionScale <= eligible * threshold` with `llround` thresholds, Python float `p * eligible` | generate.py writes the integer thresholds into experiment.json; analyze.py applies the integer law from them |
+| 4 | ExperimentConfig.hh configure_experiment, evaluate_forgiveness | Recovery domain without a CLR mask forgives nothing silently; `evaluate_shedding` throws on the same miss | Refuse at parse: recovery requires `clr_mask_configured` and an entry for every step |
+| 5 | ExperimentConfig.hh evaluate_shedding | Recovery arm rows carry `decision_hash 0`; admission arms carry a hash | Compute the hash before the domain branch |
+| 6 | rdma-hw.cc ReceiveAck | Returns at `IsFinished()` before the CNP block; a forgiven trim's rate cut is lost on the completing ACK | Handle CNP before the completion return |
+| 7 | rdma-hw.cc SendAck, m_pending_cnp | Set and consumed in one call; a field dressed as state | Pass `cnp` as the `SendAck` argument; delete the field; design section 2 reads "the ACK the forgive emits carries the CNP" |
+| 8 | analyze.py _check_ledger_law | Runs on admission runs where the law is not a cap; can report `violated` on a sound run | Domain-tagged result; `not_applicable` outside recovery; assert recovery-arm `shed == 0` |
+| 9 | report.py | No forgiveness section; a run.py recovery run shows no forgiven bytes, law, or W' | Add the section beside network health |
+| 10 | test_evaluation_matrix.py, evaluation-matrix.json | Cap test checks one arm against the job budget; four arms inherit the three-arm 6720/396000 pair silently | Test `arm_count * cap` against the budget or document the walltime backstop; note the arm count in the record |
+| 11 | topology.py CongestionControlConfig | Rate fractions bounded individually; no ordering check, no test above 1.0 | Require `rate_ai <= rate_hai`; boundary tests |
+| 12 | test_compare.py | `only_arm` and `analyze_only` chain proven for three arms only | Four-arm chained test on a recovery profile |
+| 13 | rdma-queue-pair.h | `m_forgiven_bytes`, `m_forgiven_ranges` on the rxQp written, never read | Delete; the frontend flow record and `trim_forgiven` event are the record |
+| 14 | AstraSimNetwork.cc | `rank_count` never compared with the topology's node count | Refuse a mismatch in setup |
+| 15 | AstraSimNetwork.cc | Telemetry files opened before ns-3 setup can fail | Open telemetry after setup succeeds |
+| 16 | run-117-readout.md, this file | Cross-run comparison against #117 confounds selective repair with the recovery domain | State it where the comparison is drawn |
+| 17 | measurement | Pace A/B ran with `Forgiveness false` and go-back-N; the fork's per-trim cost is unmeasured | Re-run on `llama3_70b_32_direct_forgive`, domain admission vs recovery, both selective repair; report `wall_ms_delta` and trims per second |
