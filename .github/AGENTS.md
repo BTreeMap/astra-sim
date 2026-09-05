@@ -40,10 +40,10 @@ templates, the licence), and a push whose head commit subject contains
 `[skip ci]`, which GitHub applies before any job exists. Neither opens a
 ledger issue or a release; that is the point, since an evaluation wave costs
 31 cluster jobs. Do not add a job-level keyword gate: jobs behind `always()`
-would still run and write "missing" ledger rows, which is what run #118 did. A pull
-request is an iteration of a proposal rather than an experiment, so its group is
-keyed by the head ref with `cancel-in-progress`. Both live in one expression in
-`workflow_main.yml`; do not add a second concurrency block.
+would still run and write "missing" ledger rows, which is what run #118 did. The
+repository accepts no pull requests, so the workflow has no `pull_request`
+trigger and one concurrency group keyed by run id; do not add a second
+concurrency block.
 
 Because runs no longer cancel each other, the account concurrency limit is the
 real budget: **20 jobs on Free, 40 on Pro, shared across every repository in the
@@ -209,9 +209,8 @@ A run whose every section succeeded closes its issue. Anything else stays open,
 so the open `experiment-ledger` issues are exactly the runs still owing
 attention.
 
-Fork pull requests hold a read-only token and never publish; those runs are
-recorded by artifacts and the run summary. `ledger_issue: 0` disables
-publication entirely, which is also how a local invocation behaves.
+`ledger_issue: 0` disables publication entirely, which is how a local
+invocation behaves.
 
 ## Privilege: compute jobs and sink jobs
 
