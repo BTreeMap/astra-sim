@@ -112,6 +112,69 @@ def _network_health_lines(summary: dict[str, Any]) -> list[str]:
     ]
 
 
+def _forgiveness_lines(summary: dict[str, Any]) -> list[str]:
+    """Render what the recovery domain spent, and whether it stayed lawful.
+
+    Skipped for a run that neither forgave a byte nor ran the domain: the
+    section would report three zeros and a law that does not apply.
+    """
+    forgiveness = summary.get("forgiveness")
+    if not isinstance(forgiveness, dict):
+        return []
+    law = forgiveness.get("ledger_law")
+    law = law if isinstance(law, dict) else {}
+    forgiven_bytes = forgiveness.get("forgiven_bytes") or 0
+    if not forgiven_bytes and law.get("domain") != "recovery":
+        return []
+    health = summary.get("network_health")
+    health = health if isinstance(health, dict) else {}
+    by_step = forgiveness.get("forgiven_bytes_by_training_step")
+    by_step = by_step if isinstance(by_step, dict) else {}
+    return [
+        "",
+        "### Forgiveness",
+        "",
+        "> Forgiven bytes were trimmed by the fabric and then accepted by the "
+        "receiver without ever arriving, so no repair carried them. W' is W "
+        "with those bytes removed: the trimmed load the transport still had "
+        "to carry again. The ledger law caps shed plus forgiven bytes per "
+        "(receiving rank, training step) and holds only in the recovery "
+        "domain; a violated status invalidates the arm.",
+        "",
+        *_markdown_table(
+            ["Signal", "Value"],
+            [
+                ["Forgiven", _format_optional_bytes(forgiven_bytes)],
+                ["Forgiven ranges", forgiveness.get("forgiven_range_count", 0)],
+                ["Priority pulls", forgiveness.get("priority_pull_count", 0)],
+                [
+                    "W' (repaired per offered byte)",
+                    _format_optional_ratio(health.get("W_prime")),
+                ],
+                ["Ledger law", law.get("status", "not_available")],
+                ["Cells with a forgiven byte", law.get("forgiven_cell_count", 0)],
+                ["Violating cells", law.get("violation_count", 0)],
+            ],
+        ),
+        *(
+            [
+                "",
+                "Forgiven bytes by training step.",
+                "",
+                *_markdown_table(
+                    ["Training step", "Forgiven"],
+                    [
+                        [step, _format_optional_bytes(value)]
+                        for step, value in by_step.items()
+                    ],
+                ),
+            ]
+            if by_step
+            else []
+        ),
+    ]
+
+
 def _format_probability(value: Any) -> str:
     try:
         return f"{float(value) * 100:.2f}%"
@@ -730,6 +793,7 @@ def render_report(run_dir: Path, profile_path: Path) -> str:
         )
 
         lines.extend(_network_health_lines(summary))
+        lines.extend(_forgiveness_lines(summary))
 
         step_data = summary.get("by_training_step")
         if isinstance(step_data, dict):

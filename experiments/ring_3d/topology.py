@@ -410,16 +410,27 @@ def _load_congestion_control(document: dict[str, Any]) -> CongestionControl:
             "network.congestion_control.mode must be one of "
             f"{sorted(CONGESTION_CONTROL_MODES)}"
         )
+    rate_ai = _fraction(
+        control.get("rate_ai_fraction", DEFAULT_RATE_AI_FRACTION),
+        "network.congestion_control.rate_ai_fraction",
+    )
+    rate_hai = _fraction(
+        control.get("rate_hai_fraction", DEFAULT_RATE_HAI_FRACTION),
+        "network.congestion_control.rate_hai_fraction",
+    )
+    # Hyper-additive increase is the escalation additive increase escalates
+    # into, so a profile with the two the wrong way round is physically
+    # backwards: the recovery would slow down the longer it went unchallenged.
+    # Each fraction alone is in range, so only the ordering catches it.
+    if rate_ai > rate_hai:
+        raise ValueError(
+            "network.congestion_control.rate_ai_fraction must not exceed "
+            "rate_hai_fraction"
+        )
     return CongestionControl(
         mode=mode,
-        rate_ai_fraction=_fraction(
-            control.get("rate_ai_fraction", DEFAULT_RATE_AI_FRACTION),
-            "network.congestion_control.rate_ai_fraction",
-        ),
-        rate_hai_fraction=_fraction(
-            control.get("rate_hai_fraction", DEFAULT_RATE_HAI_FRACTION),
-            "network.congestion_control.rate_hai_fraction",
-        ),
+        rate_ai_fraction=rate_ai,
+        rate_hai_fraction=rate_hai,
         min_rate_fraction=_fraction(
             control.get("min_rate_fraction", DEFAULT_MIN_RATE_FRACTION),
             "network.congestion_control.min_rate_fraction",

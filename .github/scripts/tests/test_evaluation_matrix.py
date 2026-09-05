@@ -29,12 +29,29 @@ REQUIRED_KEYS = {
     "ledger_key",
     "comparison",
     "comparison_seed",
+    "arm_count",
     "execution_timeout_minutes",
     "simulation_timeout_seconds",
     "require_congestion",
     "gate",
     "notes",
 }
+
+
+def expected_arm_count(record: dict[str, object]) -> int:
+    """How many ns-3 arms compare.py runs inside the one job.
+
+    A non-comparison record takes the single-run path. A comparison builds
+    fixed-low, fixed-high, and the phase-aware policy, plus a fourth recovery
+    arm when the profile names the recovery domain.
+    """
+    if not record["comparison"]:
+        return 1
+    profile = json.loads(
+        (REPOSITORY_ROOT / record["profile"]).read_text(encoding="utf-8")
+    )
+    domain = profile.get("selection_policy", {}).get("domain", "admission")
+    return 4 if domain == "recovery" else 3
 
 
 def records() -> list[dict[str, object]]:
@@ -71,10 +88,44 @@ class EvaluationMatrixTests(unittest.TestCase):
                 self.assertIn(f"{GATE_INPUTS[gate]}:", workflow)
                 self.assertIn(f'.gate == "{gate}"', workflow)
 
-    def test_the_simulator_cap_fits_inside_the_job_budget(self) -> None:
+    def test_the_arm_count_matches_the_profile_the_record_names(self) -> None:
+        """The record must say how many arms its job runs.
+
+        The arms run sequentially inside one compare.py process, so the arm
+        count is what turns a per-arm cap into a job cost. Deriving it here
+        keeps a record from inheriting a budget sized for fewer arms.
+        """
+        for record in records():
+            with self.subTest(record=record["name"]):
+                self.assertEqual(record["arm_count"], expected_arm_count(record))
+
+    def test_one_wedged_arm_dies_inside_the_job_budget(self) -> None:
+        """A necessary condition, not the budget.
+
+        The per-arm simulation cap bounds one wedged arm; it does not bound
+        the job, because the caps do not sum inside the budget for any
+        multi-arm record. test_a_multi_arm_record_names_walltime_as_its
+        _backstop covers what actually stops the job.
+        """
         for record in records():
             with self.subTest(record=record["name"]):
                 self.assertLess(
                     record["simulation_timeout_seconds"],
                     record["execution_timeout_minutes"] * 60,
                 )
+
+    def test_a_multi_arm_record_names_walltime_as_its_backstop(self) -> None:
+        """Where the caps do not sum, the record must say so.
+
+        Every comparison record is in this position, and going from three
+        arms to four made it 33% worse without changing a number. The note is
+        what a fifth arm would have to revisit.
+        """
+        for record in records():
+            budget_seconds = record["execution_timeout_minutes"] * 60
+            cost = record["arm_count"] * record["simulation_timeout_seconds"]
+            if cost <= budget_seconds:
+                continue
+            with self.subTest(record=record["name"]):
+                self.assertIn("walltime", record["notes"])
+                self.assertIn(str(record["arm_count"]), record["notes"])

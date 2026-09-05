@@ -334,6 +334,65 @@ class Ring3DGeneratorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "min_rate_fraction"):
                 load_profile(profile_path)
 
+    def test_congestion_control_bounds_each_fraction_at_one(self) -> None:
+        """A fraction of the link rate: exactly the link rate is the ceiling."""
+        document = json.loads(self.profile_path.read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            profile_path = Path(temporary_directory) / "profile.json"
+            for field in (
+                "rate_ai_fraction",
+                "rate_hai_fraction",
+                "min_rate_fraction",
+            ):
+                document["network"]["congestion_control"] = {
+                    "mode": "dcqcn",
+                    "rate_ai_fraction": 1.0,
+                    "rate_hai_fraction": 1.0,
+                    "min_rate_fraction": 1.0,
+                }
+                profile_path.write_text(json.dumps(document), encoding="utf-8")
+                profile = load_profile(profile_path)
+                self.assertEqual(
+                    profile.network.congestion_control.rates_bps(
+                        profile.network.link_rate
+                    ),
+                    (200_000_000_000, 200_000_000_000, 200_000_000_000),
+                )
+
+                document["network"]["congestion_control"][field] = 1.0000001
+                profile_path.write_text(json.dumps(document), encoding="utf-8")
+                with self.subTest(field=field):
+                    with self.assertRaisesRegex(ValueError, field):
+                        load_profile(profile_path)
+
+    def test_congestion_control_refuses_a_backwards_increase(self) -> None:
+        """Hyper-additive increase is what additive increase escalates into.
+
+        Both fractions are individually in range, so only their order says the
+        recovery would slow down the longer it went unchallenged.
+        """
+        document = json.loads(self.profile_path.read_text(encoding="utf-8"))
+        document["network"]["congestion_control"] = {
+            "mode": "dcqcn",
+            "rate_ai_fraction": 0.002,
+            "rate_hai_fraction": 0.001,
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            profile_path = Path(temporary_directory) / "profile.json"
+            profile_path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "rate_ai_fraction"):
+                load_profile(profile_path)
+
+            # Equal is allowed: the defaults already run hai at min_rate.
+            document["network"]["congestion_control"]["rate_ai_fraction"] = 0.001
+            profile_path.write_text(json.dumps(document), encoding="utf-8")
+            profile = load_profile(profile_path)
+
+        self.assertEqual(
+            profile.network.congestion_control.rate_ai_fraction,
+            profile.network.congestion_control.rate_hai_fraction,
+        )
+
     def test_only_new_families_turn_congestion_control_on(self) -> None:
         """Every arm measured to date ran with no sender reaction at all.
 

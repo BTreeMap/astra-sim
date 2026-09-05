@@ -397,6 +397,67 @@ class Ring3DReportTests(unittest.TestCase):
             self.assertIn("300.0 minutes", report)
             self.assertIn("Materialized profile copy", report)
 
+    def test_report_renders_the_forgiveness_section_for_a_recovery_run(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory) / "run"
+            self._write_completed_run(run_dir)
+            summary_path = run_dir / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["network_health"] = {
+                "status": "available",
+                "W": 0.172525,
+                "W_prime": 0.171595,
+                "wire_per_offered": 1.04,
+                "trimmed_admission_bytes": 14_563_840,
+                "offered_physical_bytes": 84_410_368,
+                "burst_drain_ns": 1_000,
+            }
+            summary["forgiveness"] = {
+                "forgiven_bytes": 78_608,
+                "forgiven_range_count": 79,
+                "priority_pull_count": 3,
+                "forgiven_bytes_by_training_step": {"2": 78_608},
+                "ledger_law": {
+                    "status": "verified",
+                    "domain": "recovery",
+                    "decision_scale": 1_000_000,
+                    "cell_count": 24,
+                    "forgiven_cell_count": 1,
+                    "violation_count": 0,
+                },
+            }
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            report = render_report(run_dir, self.profile_path)
+
+        self.assertIn("### Forgiveness", report)
+        self.assertIn("Forgiven ranges", report)
+        self.assertIn("| Ledger law | verified |", report)
+        self.assertIn("W' (repaired per offered byte)", report)
+        self.assertIn("Forgiven bytes by training step", report)
+
+    def test_report_omits_forgiveness_for_an_admission_run(self) -> None:
+        """Three zeros and a law that does not apply is not a section."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory) / "run"
+            self._write_completed_run(run_dir)
+            summary_path = run_dir / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["forgiveness"] = {
+                "forgiven_bytes": 0,
+                "forgiven_range_count": 0,
+                "priority_pull_count": 0,
+                "forgiven_bytes_by_training_step": {},
+                "ledger_law": {"status": "not_applicable", "domain": "admission"},
+            }
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            report = render_report(run_dir, self.profile_path)
+
+        self.assertNotIn("### Forgiveness", report)
+
     def test_report_explains_missing_results(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             report = render_report(

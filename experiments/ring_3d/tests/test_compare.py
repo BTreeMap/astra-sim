@@ -586,6 +586,58 @@ class Ring3DComparisonTests(unittest.TestCase):
         self.assertEqual(len(comparison["per_seed"]), 1)
         self.assertIn("aggregate", comparison)
 
+    def test_chained_arm_runs_reassemble_a_four_arm_recovery_comparison(
+        self,
+    ) -> None:
+        """The resumability path an operator reaches for after a partial wave.
+
+        A recovery profile builds a fourth arm, so the chain has to carry it:
+        run each arm alone, then reassemble without launching a simulation,
+        and get the recovery aggregate the whole-comparison path produces.
+        """
+
+        def fake_run_experiment(
+            _profile: Path, output: Path, **_kwargs: object
+        ) -> dict[str, object]:
+            output.mkdir(parents=True, exist_ok=True)
+            (output / "summary.json").write_text(
+                json.dumps(congested_summary()), encoding="utf-8"
+            )
+            return {}
+
+        profile = (
+            REPOSITORY_ROOT / "experiments/ring_3d/profiles/forgiveness_smoke_8.json"
+        )
+        arms = (
+            "fixed_p_low_baseline",
+            "fixed_p_high_baseline",
+            "dblp_policy",
+            "recovery_policy",
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "comparison"
+            with patch(
+                "experiments.ring_3d.compare.run_experiment",
+                side_effect=fake_run_experiment,
+            ) as mocked_run:
+                for arm in arms:
+                    partial = run_comparison(profile, output, [17], only_arm=arm)
+                    self.assertEqual(partial, {"arm": arm, "seeds": [17]})
+                self.assertEqual(mocked_run.call_count, len(arms))
+                comparison = run_comparison(profile, output, [17], analyze_only=True)
+                self.assertEqual(mocked_run.call_count, len(arms))
+            self.assertTrue((output.resolve() / "comparison.json").exists())
+            # The fourth arm is named up front when it never completed, not
+            # surfaced as a KeyError from inside the recovery aggregate.
+            (output.resolve() / "seed_17" / arms[3] / "summary.json").unlink()
+            with self.assertRaisesRegex(ValueError, arms[3]):
+                run_comparison(profile, output, [17], analyze_only=True)
+
+        self.assertEqual(comparison["selection_policy"]["domain"], "recovery")
+        self.assertEqual(len(comparison["per_seed"]), 1)
+        self.assertIn("recovery_aggregate", comparison)
+        self.assertIn("W_prime", comparison["recovery_aggregate"])
+
 
 if __name__ == "__main__":
     unittest.main()
