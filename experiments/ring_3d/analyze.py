@@ -357,6 +357,28 @@ def _clr_steps(manifest: dict[str, Any] | None) -> frozenset[str] | None:
     )
 
 
+def _scaled_policy(policy: dict[str, Any]) -> tuple[int, int, int]:
+    """The manifest's decision scale and its two scaled thresholds.
+
+    Only the integers are read. Deriving them from the probabilities beside
+    them would put the rounding back in two places, which is the divergence
+    this removes; the simulator refuses a file whose integers disagree with
+    llround of those probabilities, so one number reaches all three.
+    """
+    scale = policy["decision_scale"]
+    if isinstance(scale, bool) or not isinstance(scale, int) or scale <= 0:
+        raise ValueError("decision_scale must be a positive integer")
+    thresholds = []
+    for name in ("p_low_threshold", "p_high_threshold"):
+        scaled = policy[name]
+        if isinstance(scaled, bool) or not isinstance(scaled, int):
+            raise TypeError(f"{name} must be an integer")
+        if not 0 <= scaled <= scale:
+            raise ValueError(f"{name} must be in [0, {scale}]")
+        thresholds.append(scaled)
+    return scale, thresholds[0], thresholds[1]
+
+
 def _forgiven_by_step(
     cells: dict[tuple[str, str], dict[str, int]],
 ) -> dict[str, int]:
@@ -377,11 +399,20 @@ def _check_ledger_law(
 ) -> dict[str, Any]:
     """Verify shed + forgiven <= p(step) * eligible for every (rank, step).
 
-    This is the recovery domain's safety property, and it is checkable from
-    the telemetry alone: the flow rows carry eligible, shed, and forgiven
-    bytes, and the CLR mask decides which threshold each step is held to.
-    A violation invalidates the arm; it is not a rounding artifact, because
-    the simulator applies the same integer law before charging.
+    The recovery domain's safety property, checkable from the telemetry
+    alone: the flow rows carry eligible, shed, and forgiven bytes, and the
+    CLR mask decides which threshold each step is held to.
+
+    The inequality is the simulator's, byte for byte: integer arithmetic
+    over the scaled thresholds the manifest carries, never a float product,
+    so a cell landing exactly on the boundary cannot be spent in ns-3 and
+    reported violated here. The simulator refuses a manifest whose scaled
+    integers disagree with the probabilities beside them.
+
+    The law caps nothing in the admission domain, where shedding is a
+    per-flow hash draw rather than a per-cell budget, so a small cell can
+    exceed the rate by chance alone. The result is tagged with the domain
+    and reported not_applicable outside recovery.
     """
     if not cells:
         return {"status": "no_eligible_traffic"}
@@ -389,24 +420,44 @@ def _check_ledger_law(
     clr_steps = _clr_steps(manifest)
     if not isinstance(policy, dict) or clr_steps is None:
         return {"status": "not_available", "cell_count": len(cells)}
+    domain = policy.get("domain")
+    if domain != "recovery":
+        return {
+            "status": "not_applicable",
+            "domain": domain,
+            "cell_count": len(cells),
+        }
     try:
-        p_low = float(policy["p_low"])
-        p_high = float(policy["p_high"])
+        scale, low, high = _scaled_policy(policy)
     except (KeyError, TypeError, ValueError):
-        return {"status": "not_available", "cell_count": len(cells)}
+        return {
+            "status": "not_available",
+            "domain": domain,
+            "cell_count": len(cells),
+        }
+    # Recovery sheds nothing at admission: evaluate_shedding returns before
+    # the shed decision for this domain, so the whole budget is forgiveness's.
+    # A shed byte here means the arm ran a domain its manifest denies.
+    shed_cells = [
+        {"dst": dst, "training_step": step, **cell}
+        for (dst, step), cell in sorted(cells.items())
+        if cell["shed_bytes"]
+    ]
     violations = [
         {
             "dst": dst,
             "training_step": step,
-            "threshold": p_low if step in clr_steps else p_high,
+            "threshold": low if step in clr_steps else high,
             **cell,
         }
         for (dst, step), cell in sorted(cells.items())
-        if cell["shed_bytes"] + cell["forgiven_bytes"]
-        > (p_low if step in clr_steps else p_high) * cell["eligible_bytes"]
+        if (cell["shed_bytes"] + cell["forgiven_bytes"]) * scale
+        > cell["eligible_bytes"] * (low if step in clr_steps else high)
     ]
     return {
-        "status": "violated" if violations else "verified",
+        "status": "violated" if violations or shed_cells else "verified",
+        "domain": domain,
+        "decision_scale": scale,
         "cell_count": len(cells),
         "forgiven_cell_count": sum(
             1 for cell in cells.values() if cell["forgiven_bytes"]
@@ -415,6 +466,8 @@ def _check_ledger_law(
         # cells name the rank and step to look at.
         "violations": violations[:10],
         "violation_count": len(violations),
+        "admission_shed_cells": shed_cells[:10],
+        "admission_shed_cell_count": len(shed_cells),
     }
 
 

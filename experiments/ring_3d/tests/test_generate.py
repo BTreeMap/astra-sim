@@ -15,12 +15,14 @@ from chakra.schema.protobuf.et_def_pb2 import GlobalMetadata, Node
 from chakra.src.third_party.utils.protolib import decodeMessage
 
 from experiments.ring_3d.generate import (
+    DECISION_SCALE,
     REPOSITORY_ROOT,
     coordinates_for,
     generate_groups,
     load_profile,
     materialize,
     rank_for,
+    scaled_threshold,
 )
 from experiments.ring_3d.topology import build_topology
 
@@ -90,6 +92,8 @@ class Ring3DGeneratorTests(unittest.TestCase):
                     "semantics": "logical_admission_selection",
                     "p_low": 0.005,
                     "p_high": 0.1,
+                    "p_low_threshold": 5_000,
+                    "p_high_threshold": 100_000,
                 },
             )
             with (output / "clr_mask.csv").open(newline="", encoding="utf-8") as handle:
@@ -1317,6 +1321,29 @@ class Ring3DGeneratorTests(unittest.TestCase):
             self.assertIn(ids["step_1_dp_all_reduce_bucket_0"], optimizer.ctrl_deps)
             self.assertIn(ids["step_1_dp_all_reduce_bucket_1"], optimizer.ctrl_deps)
             self.assertNotIn(ids["step_1_dp_all_reduce_bucket_0"], bucket_one.ctrl_deps)
+
+
+class Ring3DDecisionThresholdTests(unittest.TestCase):
+    """The scaled threshold must be what C++ llround(p * kDecisionScale) is.
+
+    A tie is the only case where the candidate roundings differ, and it is
+    reachable: p_low 5e-7 scales to exactly 0.5.
+    """
+
+    def test_a_tie_rounds_away_from_zero_not_to_even(self) -> None:
+        self.assertEqual(scaled_threshold(5e-7), 1)
+        self.assertEqual(scaled_threshold(2.5e-6), 3)
+        self.assertEqual(scaled_threshold(1.5e-6), 2)
+
+    def test_a_non_tie_rounds_to_nearest(self) -> None:
+        self.assertEqual(scaled_threshold(1.2e-6), 1)
+        self.assertEqual(scaled_threshold(1.9e-6), 2)
+
+    def test_the_documented_probabilities_scale_exactly(self) -> None:
+        self.assertEqual(scaled_threshold(0.005), 5_000)
+        self.assertEqual(scaled_threshold(0.1), 100_000)
+        self.assertEqual(scaled_threshold(1.0), DECISION_SCALE)
+        self.assertEqual(scaled_threshold(0.0), 0)
 
 
 if __name__ == "__main__":

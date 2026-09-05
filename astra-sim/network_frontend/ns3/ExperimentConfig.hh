@@ -613,6 +613,29 @@ inline uint64_t parse_probability_threshold(const nlohmann::json& value,
         std::llround(probability * static_cast<double>(kDecisionScale)));
 }
 
+// The generator writes the scaled integer beside the float it came from.
+// Both are optional for a hand-written file, but a present one must agree
+// with llround of the float, which is what the simulator itself rounds to.
+inline void require_scaled_threshold(const nlohmann::json& policy,
+                                     const char* key,
+                                     uint64_t rounded) {
+    if (!policy.contains(key)) {
+        return;
+    }
+    const auto& value = policy.at(key);
+    if (!value.is_number_unsigned() || value.get<uint64_t>() > kDecisionScale) {
+        throw std::runtime_error(
+            std::string("selection_policy.") + key +
+            " must be an unsigned integer in [0, 1000000]");
+    }
+    if (value.get<uint64_t>() != rounded) {
+        throw std::runtime_error(
+            std::string("selection_policy.") + key + " is " +
+            std::to_string(value.get<uint64_t>()) + " but the probability "
+            "beside it rounds to " + std::to_string(rounded));
+    }
+}
+
 inline void configure_clr_mask(const std::string& configuration_path) {
     if (configuration_path.empty() || configuration_path == "empty") {
         return;
@@ -826,10 +849,10 @@ inline void configure_experiment(const std::string& configuration_path,
         if (!policy.is_object()) {
             throw std::runtime_error("selection_policy must be an object");
         }
-        reject_unknown_keys(
-            policy,
-            {"semantics", "p_low", "p_high", "domain", "transport"},
-            "selection_policy");
+        reject_unknown_keys(policy,
+                            {"semantics", "p_low", "p_high", "p_low_threshold",
+                             "p_high_threshold", "domain", "transport"},
+                            "selection_policy");
         if (policy.contains("domain")) {
             const auto& domain = policy.at("domain");
             if (domain == "admission") {
@@ -890,6 +913,15 @@ inline void configure_experiment(const std::string& configuration_path,
             policy.at("p_low"), "selection_policy.p_low");
         experiment_config.p_high_threshold = parse_probability_threshold(
             policy.at("p_high"), "selection_policy.p_high");
+        // The budget law is integer arithmetic on these thresholds, and the
+        // analyzer checks the same law from the same integers in the file.
+        // Refusing a disagreement is what keeps one law in two languages from
+        // becoming two laws: a boundary cell must not be spent here and
+        // reported violated there.
+        require_scaled_threshold(policy, "p_low_threshold",
+                                 experiment_config.p_low_threshold);
+        require_scaled_threshold(policy, "p_high_threshold",
+                                 experiment_config.p_high_threshold);
         // The strict-CLR ceiling on p_low (<= 0.01) is experiment-design
         // policy owned by the generator, which grants exactly one documented
         // exemption: the fixed-high comparison arm runs with p_low set to

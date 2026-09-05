@@ -14,6 +14,7 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass, replace
+from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Iterable
@@ -128,6 +129,11 @@ GRADIENT_BUCKET_SAMPLE_MODEL_KEYS = {
     "gradient_accumulation_steps",
 }
 MAX_P_LOW = 0.01
+# The simulator's budget law is exact integer arithmetic over thresholds
+# scaled by this factor (ExperimentConfig.hh kDecisionScale). The generator
+# resolves the scaled value once and writes it beside the float so the law is
+# computed from one number in every language that checks it.
+DECISION_SCALE = 1_000_000
 DEFAULT_MICROBURST_TRIGGER_STEP = 2
 DEFAULT_WORKLOAD_KIND = "three_dimensional_overlap"
 # "ring" walks DP peers with fan-in 1 and can never form an incast; "direct"
@@ -274,6 +280,18 @@ def _probability(value: Any, field: str) -> float:
     if not 0.0 <= probability <= 1.0:
         raise ValueError(f"{field} must be in [0, 1]")
     return probability
+
+
+def scaled_threshold(probability: float) -> int:
+    """Scale a probability the way C++ std::llround(p * kDecisionScale) does.
+
+    Round half away from zero over the exact double, not Python's round, whose
+    ties go to even, and not int(x + 0.5), which rounds the addition first. A
+    probability landing on a half-integer scaled value is the only case where
+    the three disagree, and it is the case the boundary tests pin.
+    """
+    scaled = Decimal(probability * DECISION_SCALE)
+    return int(scaled.quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
 
 def _load_selection_policy(document: dict[str, Any]) -> SelectionPolicy:
@@ -1394,6 +1412,11 @@ def write_experiment_config(
         "semantics": selection_policy.semantics,
         "p_low": selection_policy.p_low,
         "p_high": selection_policy.p_high,
+        # The scaled integers the budget law is actually computed from. The
+        # simulator refuses the file if either disagrees with llround of the
+        # float beside it, so the two representations cannot drift.
+        "p_low_threshold": scaled_threshold(selection_policy.p_low),
+        "p_high_threshold": scaled_threshold(selection_policy.p_high),
     }
     if selection_policy.domain is SheddingDomain.RECOVERY:
         policy_document["domain"] = selection_policy.domain.value
@@ -1626,6 +1649,11 @@ def materialize(
             "domain": selection_policy.domain.value,
             "p_low": selection_policy.p_low,
             "p_high": selection_policy.p_high,
+            # The analyzer checks the budget law from these, not from the
+            # floats, so it computes the inequality the simulator enforced.
+            "decision_scale": DECISION_SCALE,
+            "p_low_threshold": scaled_threshold(selection_policy.p_low),
+            "p_high_threshold": scaled_threshold(selection_policy.p_high),
         },
         "workload": {"kind": profile.workload.kind},
         "collective_implementations": {

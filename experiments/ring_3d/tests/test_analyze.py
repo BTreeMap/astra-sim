@@ -12,6 +12,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from experiments.ring_3d.analyze import summarize
+from experiments.ring_3d.generate import DECISION_SCALE, scaled_threshold
 
 FLOW_FIELDS = [
     "flow_kind",
@@ -459,7 +460,12 @@ class Ring3DAnalysisTests(unittest.TestCase):
         return flow
 
     def write_recovery_manifest(
-        self, root: Path, clr_steps: tuple[str, ...], p_low: float, p_high: float
+        self,
+        root: Path,
+        clr_steps: tuple[str, ...],
+        p_low: float,
+        p_high: float,
+        domain: str = "recovery",
     ) -> Path:
         mask = root / "clr_mask.csv"
         mask.write_text(
@@ -477,10 +483,17 @@ class Ring3DAnalysisTests(unittest.TestCase):
                 {
                     "clr_mask": str(mask),
                     "selection_policy": {
-                        "semantics": "recovery_forgiveness",
-                        "domain": "recovery",
+                        "semantics": (
+                            "recovery_forgiveness"
+                            if domain == "recovery"
+                            else "logical_admission_selection"
+                        ),
+                        "domain": domain,
                         "p_low": p_low,
                         "p_high": p_high,
+                        "decision_scale": DECISION_SCALE,
+                        "p_low_threshold": scaled_threshold(p_low),
+                        "p_high_threshold": scaled_threshold(p_high),
                     },
                 }
             ),
@@ -529,6 +542,94 @@ class Ring3DAnalysisTests(unittest.TestCase):
         self.assertEqual(law["violation_count"], 1)
         self.assertEqual(law["violations"][0]["dst"], "4")
         self.assertEqual(law["violations"][0]["training_step"], "1")
+
+    def test_ledger_law_uses_the_integer_law_the_simulator_used(self) -> None:
+        """Two cells the float law misjudges, one in each direction.
+
+        Step 1 is critical at p_low 5e-7, which scales to threshold 1, so its
+        budget is one byte per million eligible: 1 B forgiven of 1000000 B
+        eligible is exactly on the boundary and lawful, while the float
+        product 0.5 B calls it a violation. Step 2 is non-critical at p_high
+        1.2e-6, which also scales to 1, so 11 B forgiven of 10000000 B
+        eligible is one byte over the integer budget of 10 while the float
+        product 12 B calls it lawful.
+        """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            telemetry = root / "telemetry"
+            self.write_telemetry(
+                telemetry,
+                [self.eligible_flow("4", "1", 1_000_000, 1, "10001")],
+            )
+            manifest = self.write_recovery_manifest(root, ("1",), 5e-7, 1.2e-6)
+
+            law = summarize(telemetry, manifest_path=manifest)["forgiveness"][
+                "ledger_law"
+            ]
+
+        self.assertEqual(law["status"], "verified")
+        self.assertEqual(law["decision_scale"], DECISION_SCALE)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            telemetry = root / "telemetry"
+            self.write_telemetry(
+                telemetry,
+                [self.eligible_flow("4", "2", 10_000_000, 11, "10001")],
+            )
+            manifest = self.write_recovery_manifest(root, ("1",), 5e-7, 1.2e-6)
+
+            law = summarize(telemetry, manifest_path=manifest)["forgiveness"][
+                "ledger_law"
+            ]
+
+        self.assertEqual(law["status"], "violated")
+        self.assertEqual(law["violation_count"], 1)
+        self.assertEqual(law["violations"][0]["threshold"], 1)
+
+    def test_ledger_law_does_not_apply_to_the_admission_domain(self) -> None:
+        """Admission shedding is a per-flow hash draw, not a per-cell cap.
+
+        A small cell can exceed the rate by chance, so reporting the budget
+        law there would call a sound arm violated.
+        """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            telemetry = root / "telemetry"
+            # Twenty times over the critical-step rate, and lawful anyway.
+            self.write_telemetry(
+                telemetry, [self.eligible_flow("4", "1", 1_000, 100, "10001")]
+            )
+            manifest = self.write_recovery_manifest(
+                root, ("1",), 0.005, 0.1, domain="admission"
+            )
+
+            law = summarize(telemetry, manifest_path=manifest)["forgiveness"][
+                "ledger_law"
+            ]
+
+        self.assertEqual(law["status"], "not_applicable")
+        self.assertEqual(law["domain"], "admission")
+
+    def test_ledger_law_rejects_a_recovery_arm_that_shed_at_admission(self) -> None:
+        """The recovery arm spends its budget after the trim, never before."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            telemetry = root / "telemetry"
+            # A shed row is a substituted payload, so it is the provenance
+            # control flow the policy put on the wire in its place.
+            shed = self.valid_shed_flow()
+            shed.update({"dst": "4", "training_step": "2", "source_port": "10001"})
+            self.write_telemetry(telemetry, [shed])
+            manifest = self.write_recovery_manifest(root, ("1",), 0.005, 0.1)
+
+            law = summarize(telemetry, manifest_path=manifest)["forgiveness"][
+                "ledger_law"
+            ]
+
+        self.assertEqual(law["status"], "violated")
+        self.assertEqual(law["admission_shed_cell_count"], 1)
+        self.assertEqual(law["admission_shed_cells"][0]["shed_bytes"], 1_048_576)
 
     def test_ledger_law_is_unavailable_without_the_mask_and_policy(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
