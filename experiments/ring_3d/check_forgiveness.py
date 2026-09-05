@@ -171,21 +171,21 @@ def check_race(run_dir: Path) -> list[str]:
 
 
 def check_congestion_neutrality(run_dir: Path) -> list[str]:
-    """Every trim must cost the sender a rate cut, forgiven or pulled.
+    """Every trim must cost the sender exactly one rate cut, forgiven or pulled.
 
-    A pulled trim reaches the sender as a NACK and cuts the rate there. A
-    forgiven trim never reaches the sender, so the receiver owes the cut and
-    carries it on its next ACK; one bool means several forgiven ranges can
-    collapse into one flagged ACK. That bounds the count on both sides.
+    A pulled trim reaches the sender as a notification and cuts the rate there.
+    A forgiven trim never reaches the sender, so the ACK the forgive emits
+    carries the CNP and the sender cuts on that. One cut per trim either way,
+    so the counts add rather than bound.
     """
     recovery = _summary(run_dir)["transport_recovery"]
     pulled = recovery["trim_notification_count"]
     forgiven_ranges = _summary(run_dir)["forgiveness"]["forgiven_range_count"]
     taken = recovery["cnp_received_count"]
-    if not pulled <= taken <= pulled + forgiven_ranges:
+    if taken != pulled + forgiven_ranges:
         return [
-            f"rate cuts taken ({taken}) outside the trims that owe them: "
-            f"{pulled} pulled, up to {forgiven_ranges} forgiven"
+            f"rate cuts taken ({taken}) do not account for the trims that owe "
+            f"them: {pulled} pulled plus {forgiven_ranges} forgiven"
         ]
     return []
 

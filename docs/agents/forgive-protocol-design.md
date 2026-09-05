@@ -18,9 +18,7 @@ using VerdictCallback = Callback<uint8_t, uint32_t /*sip*/, uint32_t /*dip*/,
     uint16_t /*sport*/, uint16_t /*dport*/, uint64_t /*seq*/, uint32_t /*len*/>;
 
 struct RdmaRxQueuePair {            // existing, gains:
-  std::map<uint64_t, uint64_t> m_pulled_ranges;  // [start,end) with a PULL outstanding; pruned below ReceiverNextExpectedSeq
-  uint64_t m_forgiven_bytes;  uint32_t m_forgiven_ranges;
-  bool m_pending_cnp;               // a forgiven non-last-hop trim owes CC one CNP
+  std::map<uint64_t, PulledRange> m_pulled_ranges;  // [start,end) with a PULL outstanding; pruned below ReceiverNextExpectedSeq
 };
 struct RdmaQueuePair {              // existing, gains counters only:
   uint32_t m_timeouts;              // cumulative RTO firings (m_recovery_retries resets on progress)
@@ -86,7 +84,7 @@ Receiver, on trim arrival for range r = [seq, seq+len), rxQp q:
 | Pulled | trim | resend PULL with the same priority; idempotent |
 | Forgiven | trim | ACK; no charge |
 | Unknown | trim, verdict Pull / PullPriority | record in m_pulled_ranges; SendTrimNack(priority) |
-| Unknown | trim, verdict Forgive | AddOutOfOrderRange(r); if seq == ReceiverNextExpectedSeq run the ReceiverCheckSeq advance; ACK now; m_pending_cnp |= !lastHop |
+| Unknown | trim, verdict Forgive | AddOutOfOrderRange(r); if seq <= ReceiverNextExpectedSeq run the ReceiverCheckSeq advance; ACK now, with FLAG_CNP set |
 | Forgiven | data (RTO retransmit) | existing old-sequence branch: drop payload, ACK; no refund |
 | Pulled | data | existing in-order or out-of-order accept; erase from m_pulled_ranges on advance |
 
@@ -103,10 +101,13 @@ verdict(sip, dip, sport, dport, seq, len):
   ledger.charge(dst, step, len); flow.forgiven_bytes += len; -> Forgive
 ```
 
-CC neutrality: the next ACK from q carries FLAG_CNP when m_pending_cnp,
-so `ReceiveAck` runs `cnp_received_mlx` exactly as a pulled non-last-hop
-trim would. Without this a forgiven trim hides congestion. Only mode 1
-reacts; under `CC_MODE 12` the flag is inert and harmless.
+CC neutrality: the ACK the forgive emits carries FLAG_CNP, so
+`ReceiveAck` runs `cnp_received_mlx` exactly as a pulled non-last-hop
+trim would. Without this a forgiven trim hides congestion. The debt is
+paid by that ACK rather than carried, so one forgiven range costs one
+rate cut and a lost ACK loses the cut with the acknowledgement rather
+than silently. Only mode 1 reacts; under `CC_MODE 12` the flag is inert
+and harmless.
 
 Sender: unchanged. The cumulative ACK advances snd_una past forgiven
 holes; completion stays `snd_una == m_size`. `RecoverTrimmedQueue` reads
@@ -175,10 +176,12 @@ forgiveness needs zero sender change and one bit on the reverse path.
 
 ## 8. Resolved differently during the build (2026-09-05)
 
-- `m_pending_cnp` is set for every forgiven trim, not only non-last-hop
-  ones. Section 6 removes the last-hop guard from the pulled path, so
-  keeping `|= !lastHop` here would make forgiving cheaper than pulling
-  and break the CC neutrality section 2 asks for.
+- The CNP is set for every forgiven trim, not only non-last-hop ones.
+  Section 6 removes the last-hop guard from the pulled path, so keeping
+  `|= !lastHop` here would make forgiving cheaper than pulling and break
+  the CC neutrality section 2 asks for. It rides the forgive's own ACK:
+  the `m_pending_cnp` field the build first carried was set and consumed
+  in one call, a parameter dressed as queue-pair state.
 - `m_pulled_ranges` carries `{end, priority}` rather than a bare end
   offset. The transition table requires a repeated trim to repeat the
   same PULL priority, which an end offset cannot remember.
