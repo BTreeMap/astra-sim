@@ -58,7 +58,7 @@ function compile {
     cmake_args+=(-DNS3_CCACHE=OFF)
     configure_args+=(-- "${cmake_args[@]}")
     ./ns3 configure "${configure_args[@]}"
-    ./ns3 build AstraSimNetwork -j $(nproc)
+    ./ns3 build AstraSimNetwork RdmaRangeAlgebra -j $(nproc)
     cd "${SCRIPT_DIR:?}"
 }
 function cleanup {
@@ -72,7 +72,7 @@ function cleanup_result {
 function debug {
     cd "${NS3_DIR}"
     ./ns3 configure --enable-mpi --build-profile debug
-    ./ns3 build AstraSimNetwork -j 12 -v
+    ./ns3 build AstraSimNetwork RdmaRangeAlgebra -j 12 -v
     cd "${NS3_DIR}/build/scratch"
 }
 # Main Script
