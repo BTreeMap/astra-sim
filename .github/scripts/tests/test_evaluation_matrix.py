@@ -13,21 +13,25 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 MATRIX = REPOSITORY_ROOT / ".github/workflows/evaluation-matrix.json"
 WORKFLOW = REPOSITORY_ROOT / ".github/workflows/workflow_main.yml"
 
-# Every gate the plan step selects on. "always" needs no input; the rest are
-# opt-in families behind a workflow_dispatch boolean.
+# Every gate the plan step selects on. Each one is a family a dispatch can run
+# alone, so each one owns a workflow_dispatch boolean and a jq selector.
 GATES = {"always", "structural", "regime_map", "forgive"}
 GATE_INPUTS = {
+    "always": "run_always",
     "structural": "run_structural_studies",
     "regime_map": "run_regime_map",
     "forgive": "run_forgive_studies",
 }
+# The closed sum the provision job validates and ci/dcs/evaluate.sh dispatches
+# on. Nothing downstream of that validation branches on anything else.
+KINDS = {"comparison", "single", "smoke"}
 REQUIRED_KEYS = {
     "name",
     "profile",
     "run_directory",
     "artifact_name",
     "ledger_key",
-    "comparison",
+    "kind",
     "comparison_seed",
     "arm_count",
     "execution_timeout_minutes",
@@ -39,13 +43,13 @@ REQUIRED_KEYS = {
 
 
 def expected_arm_count(record: dict[str, object]) -> int:
-    """How many ns-3 arms compare.py runs inside the one job.
+    """How many ns-3 arms the job runs.
 
-    A non-comparison record takes the single-run path. A comparison builds
-    fixed-low, fixed-high, and the phase-aware policy, plus a fourth recovery
-    arm when the profile names the recovery domain.
+    A single or smoke record runs one. A comparison builds fixed-low,
+    fixed-high, and the phase-aware policy, plus a fourth recovery arm when
+    the profile names the recovery domain.
     """
-    if not record["comparison"]:
+    if record["kind"] != "comparison":
         return 1
     profile = json.loads(
         (REPOSITORY_ROOT / record["profile"]).read_text(encoding="utf-8")
@@ -69,6 +73,35 @@ class EvaluationMatrixTests(unittest.TestCase):
             with self.subTest(record=record["name"]):
                 self.assertIn(record["gate"], GATES)
 
+    def test_every_kind_is_one_of_the_three(self) -> None:
+        for record in records():
+            with self.subTest(record=record["name"]):
+                self.assertIn(record["kind"], KINDS)
+
+    def test_only_a_comparison_carries_a_seed(self) -> None:
+        """A seed selects one matched pair out of the seed set.
+
+        run.py and the smoke scripts take no seed, so a non-zero seed on
+        anything but a comparison is a value the job would silently drop.
+        """
+        for record in records():
+            if record["kind"] == "comparison":
+                continue
+            with self.subTest(record=record["name"]):
+                self.assertEqual(record["comparison_seed"], 0)
+
+    def test_only_a_comparison_requires_congestion(self) -> None:
+        """--require-congestion is a compare.py flag.
+
+        It fails a paired evaluation that lacks raw queue, PFC, and
+        background-traffic evidence; there is no such gate on a single run.
+        """
+        for record in records():
+            if record["kind"] == "comparison":
+                continue
+            with self.subTest(record=record["name"]):
+                self.assertFalse(record["require_congestion"])
+
     def test_every_profile_exists(self) -> None:
         for record in records():
             with self.subTest(record=record["name"]):
@@ -82,8 +115,7 @@ class EvaluationMatrixTests(unittest.TestCase):
 
     def test_every_gated_family_has_a_dispatch_input_and_a_selector(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        used = {record["gate"] for record in records()} - {"always"}
-        for gate in used:
+        for gate in {record["gate"] for record in records()}:
             with self.subTest(gate=gate):
                 self.assertIn(f"{GATE_INPUTS[gate]}:", workflow)
                 self.assertIn(f'.gate == "{gate}"', workflow)

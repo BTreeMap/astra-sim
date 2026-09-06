@@ -45,17 +45,21 @@ on:
         required: false
         default: ''
         type: string
-      comparison:
-        description: Run a matched comparison instead of one structural experiment.
+      kind:
+        description: >
+          Which experiment the arm runs: `comparison`, `single`, or `smoke`.
+          `workflow_call` has no enum type, so the `provision` job validates
+          the value before a SLURM runner is minted and `ci/dcs/evaluate.sh`
+          dispatches on it.
         required: true
-        type: boolean
+        type: string
       comparison_seed:
         description: Optional single seed for one independently scheduled matched pair; zero runs the default seed set.
         required: false
         default: 0
         type: number
       execution_timeout_minutes:
-        description: Wall-clock guard for the run or comparison command.
+        description: Wall-clock guard for the whole ci/dcs/evaluate.sh invocation.
         required: true
         type: number
       simulation_timeout_seconds:
@@ -71,8 +75,7 @@ on:
           Artifact-name prefix of the prebuilt cluster runtime bundles from
           the calling run's `cluster-build` job. Each cluster node appends
           the instruction-set level it selects for itself
-          (`-x86-64-v3`/`-x86-64-v4`). Unused by the hosted structural path,
-          which builds through the shared compiler cache.
+          (`-x86-64-v3`/`-x86-64-v4`).
         required: true
         type: string
 
@@ -80,80 +83,33 @@ permissions:
   contents: read
 
 jobs:
-  evaluate:
-    name: Structural experiment
-    if: ${{ !inputs.comparison }}
-    runs-on: ubuntu-24.04
-    # The reusable workflow owns a complete hosted job. Callers reserve their
-    # simulator and wrapper budgets below the six-hour GitHub Actions limit.
-    timeout-minutes: 360
-    # This job runs the compiled simulator for hours. It holds no write scope
-    # at all; every outward-facing effect happens in the `archive` job below.
-    permissions:
-      contents: read
-    env:
-      EXPERIMENT_PROFILE: ${{ inputs.profile }}
-      EXPERIMENT_RUN_DIRECTORY: ${{ inputs.run_directory }}
-
-    steps:
-    - name: Check out source and submodules
-      uses: actions/checkout@v7
-      with:
-        submodules: recursive
-        persist-credentials: false
-
-    - name: Set up the locked Python environment
-      uses: ./.github/actions/python-env
-
-    # Builds its own backends through the shared compiler cache instead of
-    # consuming the native-build artifact. Structural experiments run only
-    # on dispatch, and paying a cached build here frees every evaluation
-    # from gating on - and failing with - a build job whose artifact the
-    # cluster path never used.
-    - name: Build the native backends through the trusted compiler cache
-      uses: ./.github/actions/native-build
-
-    - name: Run structural ns-3 experiment
-      env:
-        EXECUTION_TIMEOUT_MINUTES: ${{ inputs.execution_timeout_minutes }}
-        SIMULATION_TIMEOUT_SECONDS: ${{ inputs.simulation_timeout_seconds }}
-      run: |
-        timeout --foreground "${EXECUTION_TIMEOUT_MINUTES}m" \
-          uv run --locked python experiments/ring_3d/run.py \
-          --profile "$EXPERIMENT_PROFILE" \
-          --output "$EXPERIMENT_RUN_DIRECTORY" \
-          --simulation-timeout-seconds "$SIMULATION_TIMEOUT_SECONDS" \
-          --clean
-
-    - name: Publish structural researcher report
-      if: ${{ always() }}
-      run: |
-        uv run --locked python experiments/ring_3d/report.py \
-          --profile "$EXPERIMENT_PROFILE" \
-          --run-dir "$EXPERIMENT_RUN_DIRECTORY" \
-          --output "$EXPERIMENT_RUN_DIRECTORY/research_report.md"
-        cat "$EXPERIMENT_RUN_DIRECTORY/research_report.md" >> "$GITHUB_STEP_SUMMARY"
-
-    - name: Upload reproducibility bundle
-      if: always()
-      uses: actions/upload-artifact@v7
-      with:
-        name: ${{ inputs.artifact_name }}-${{ github.run_id }}
-        path: ${{ inputs.run_directory }}
-        if-no-files-found: ignore
-        overwrite: true
-
   provision:
     name: Provision the cluster runner
-    # Every paired comparison runs on the cluster: heavy pairs cannot finish
-    # under the 6-hour hosted ceiling, and self-hosted jobs may run 5 days.
-    if: ${{ inputs.comparison }}
+    # Every experiment runs on the cluster: a heavy pair cannot finish under
+    # the 6-hour hosted ceiling, and a self-hosted job may run 5 days.
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # Authenticates with repository secrets, not the workflow token.
     permissions: {}
 
     steps:
+    # The smart constructor for `kind`. It runs before the mint step, so an
+    # unknown value costs no SLURM allocation, and it is the only place in
+    # the workflow that inspects the value: everything downstream either
+    # forwards it or hands it to ci/dcs/evaluate.sh.
+    - name: Validate the experiment kind
+      env:
+        KIND: ${{ inputs.kind }}
+      run: |
+        set -euo pipefail
+        case "$KIND" in
+          comparison|single|smoke) echo "kind: ${KIND}" ;;
+          *)
+            echo "unknown kind '${KIND}'; expected comparison, single, or smoke" >&2
+            exit 1
+            ;;
+        esac
+
     - name: Check out the provisioning action
       uses: actions/checkout@v7
       with:
@@ -165,7 +121,7 @@ jobs:
       uses: ./.github/actions/dcs-provision
       with:
         runner-name: dcs-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.ledger_key }}
-        # Also the exact label the companion evaluate_cluster job requires.
+        # Also the exact label the companion evaluate job requires.
         # Pinning each runner to its own experiment keeps the assignment
         # 1:1 by construction - a runner can never pick up a concurrent
         # experiment's job - so a SLURM job id always maps to one known
@@ -177,10 +133,9 @@ jobs:
         ssh-dest: ${{ vars.DCS_SSH_DEST }}
         ssh-host-key: ${{ vars.DCS_SSH_HOST_KEY }}
 
-  evaluate_cluster:
-    name: Cluster comparison
+  evaluate:
+    name: Experiment on the cluster
     needs: provision
-    if: ${{ inputs.comparison }}
     # The run-scoped label pins this job to the one runner its provision
     # job minted: concurrent experiments can never swap runners, so a SLURM
     # job id always identifies one Actions run. (A JIT registration carries
@@ -295,10 +250,14 @@ jobs:
           > "$RUNNER_TEMP/segment-hasher.log" 2>&1 &
         echo $! > "$RUNNER_TEMP/segment-hasher.pid"
 
-    - name: Run the full paired comparison
+    # One command for every kind. The script owns the dispatch and leaves the
+    # report at $EXPERIMENT_RUN_DIRECTORY/report.md, so no step below this one
+    # knows which experiment ran.
+    - name: Run the experiment
       # Inputs cross into the shell as environment data, never as text
       # spliced into the script.
       env:
+        KIND: ${{ inputs.kind }}
         EXECUTION_TIMEOUT_MINUTES: ${{ inputs.execution_timeout_minutes }}
         SIMULATION_TIMEOUT_SECONDS: ${{ inputs.simulation_timeout_seconds }}
         REQUIRE_CONGESTION: ${{ inputs.require_congestion }}
@@ -309,20 +268,8 @@ jobs:
         # hours on 2026-08-30). See install-runtime.sh.
         LD_LIBRARY_PATH: ${{ env.ASTRA_SIM_LD_LIBRARY_PATH }}
       run: |
-        command=(
-          uv run --locked python experiments/ring_3d/compare.py
-          --profile "$EXPERIMENT_PROFILE"
-          --output "$EXPERIMENT_RUN_DIRECTORY"
-          --simulation-timeout-seconds "$SIMULATION_TIMEOUT_SECONDS"
-          --clean
-        )
-        if [[ "$REQUIRE_CONGESTION" == "true" ]]; then
-          command+=(--require-congestion)
-        fi
-        if [[ "$COMPARISON_SEED" != "0" ]]; then
-          command+=(--seeds "$COMPARISON_SEED")
-        fi
-        timeout --foreground "${EXECUTION_TIMEOUT_MINUTES}m" "${command[@]}"
+        timeout --foreground "${EXECUTION_TIMEOUT_MINUTES}m" \
+          bash ci/dcs/evaluate.sh "$KIND"
 
     # The sim has exited, so every segment on disk is final. Drain before
     # the attest step reads the digest, or the stream record would be a
@@ -361,15 +308,15 @@ jobs:
       run: |
         .venv/bin/python .github/scripts/attest.py \
           --run-dir "$EXPERIMENT_RUN_DIRECTORY" \
-          --report "$EXPERIMENT_RUN_DIRECTORY/comparison_report.md"
+          --report "$EXPERIMENT_RUN_DIRECTORY/report.md"
 
-    - name: Publish paired comparison report
+    - name: Publish the evaluation report
       if: ${{ always() }}
       run: |
-        if [[ -f "$EXPERIMENT_RUN_DIRECTORY/comparison_report.md" ]]; then
-          cat "$EXPERIMENT_RUN_DIRECTORY/comparison_report.md" >> "$GITHUB_STEP_SUMMARY"
+        if [[ -f "$EXPERIMENT_RUN_DIRECTORY/report.md" ]]; then
+          cat "$EXPERIMENT_RUN_DIRECTORY/report.md" >> "$GITHUB_STEP_SUMMARY"
         else
-          echo "Paired evaluation did not produce a comparison report; inspect the retained diagnostics." >> "$GITHUB_STEP_SUMMARY"
+          echo "The evaluation did not produce a report; inspect the retained diagnostics." >> "$GITHUB_STEP_SUMMARY"
         fi
 
     # The arm's only delivery: rename the results onto shared scratch for
@@ -395,8 +342,8 @@ jobs:
     # runner (whose job starts now, so its tokens are minutes old) is the
     # only path they take to GitHub. Runs on failure too: a failed arm's
     # partial outbox is exactly the forensic record worth collecting.
-    needs: evaluate_cluster
-    if: ${{ !cancelled() && inputs.comparison }}
+    needs: evaluate
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # Authenticates with repository secrets, not the workflow token.
@@ -496,15 +443,12 @@ jobs:
 
   archive:
     name: Record the result
-    # The courier edge orders this job after the artifacts exist on the
-    # cluster path; the hosted structural path uploads its own.
-    needs: [ evaluate, evaluate_cluster, courier ]
+    # The courier edge orders this job after the artifacts exist.
+    needs: [ evaluate, courier ]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     # Sized for a report-scale bundle: raw transport streams are hashed
-    # and discarded on the runner, never shipped, so the 38.8 GB bundles
-    # that once forced a 360-minute ceiling here cannot recur. Hosted
-    # structural bundles (dispatch-only) may still carry some raw stream.
+    # and discarded on the runner, never shipped.
     timeout-minutes: 120
     # The only job here that holds write scopes. It runs `gh` and `tar` over a
     # downloaded bundle and never executes anything from it, so a malicious
@@ -536,9 +480,9 @@ jobs:
         issue: ${{ inputs.ledger_issue }}
         key: ${{ inputs.ledger_key }}
         title: ${{ inputs.evaluation_name }}
-        body-file: ${{ inputs.run_directory }}/${{ inputs.comparison && 'comparison_report.md' || 'research_report.md' }}
-        # Exactly one of the two paths ran; report the status of that one.
-        status: ${{ inputs.comparison && needs.evaluate_cluster.result || needs.evaluate.result }}
+        # ci/dcs/evaluate.sh leaves every kind's report under this one name.
+        body-file: ${{ inputs.run_directory }}/report.md
+        status: ${{ needs.evaluate.result }}
 
     - name: Archive the reproducibility bundle permanently
       # A ledger failure must not cost the archive: each recording channel

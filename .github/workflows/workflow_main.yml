@@ -17,6 +17,11 @@ on:
       - "LICENSE"
   workflow_dispatch:
     inputs:
+      run_always:
+        description: Run the always family
+        required: false
+        default: true
+        type: boolean
       run_structural_studies:
         description: Run 100B structural topology studies
         required: false
@@ -102,217 +107,8 @@ jobs:
         uv run --locked python -m unittest discover -s experiments/ring_3d/tests -v
         uv run --locked python -m unittest discover -s experiments/dblp/tests -v
         uv run --locked python -m unittest discover -s .github/scripts/tests -t .github/scripts -v
-        bash -n experiments/ring_3d/smoke.sh experiments/ring_3d/failure_liveness.sh experiments/ring_3d/forgiveness_smoke.sh experiments/dblp/smoke.sh utils/setup.sh .github/workflows/setup.sh ci/dcs/build.sh ci/dcs/install-runtime.sh ci/dcs/seed-store.sh ci/dcs/resolve-runtime.sh ci/dcs/outbox.sh
+        bash -n experiments/ring_3d/smoke.sh experiments/ring_3d/failure_liveness.sh experiments/ring_3d/forgiveness_smoke.sh experiments/dblp/smoke.sh utils/setup.sh ci/dcs/build.sh ci/dcs/install-runtime.sh ci/dcs/seed-store.sh ci/dcs/resolve-runtime.sh ci/dcs/outbox.sh ci/dcs/evaluate.sh
         git diff --check
-
-  native-build:
-    name: Build the native backends
-    needs: python-quality
-    runs-on: ubuntu-24.04
-    # A warm ccache build finishes in ~15 minutes, but the cache is evicted
-    # after quiet weeks and the cold rebuild is an LTO link of ns-3 on four
-    # hosted cores. 60 minutes sat close enough to a cold build to be a
-    # coin flip; double it and let the build's own progress be the signal.
-    timeout-minutes: 120
-    outputs:
-      # One definition site for the name, the same discipline the ledger issue
-      # and release tag follow. Producer and consumer cannot drift apart.
-      runtime_artifact: native-runtime-${{ github.run_id }}
-
-    steps:
-    - name: Check out source and submodules
-      uses: actions/checkout@v7
-      with:
-        submodules: recursive
-        persist-credentials: false
-
-    - name: Build the native backends through the trusted compiler cache
-      uses: ./.github/actions/native-build
-
-    - name: Package the native runtime
-      run: |
-        set -euo pipefail
-        # tar preserves the executable bit and the analytical build's symlinks;
-        # the artifact uploader's own zip does not.
-        tar -czf native-runtime.tar.gz \
-          extern/network_backend/ns-3/build \
-          build/astra_analytical/build
-        ls -l native-runtime.tar.gz
-
-    - name: Upload the native runtime
-      uses: actions/upload-artifact@v7
-      with:
-        name: ${{ format('native-runtime-{0}', github.run_id) }}
-        path: native-runtime.tar.gz
-        # Already gzipped; re-compressing costs minutes and saves nothing.
-        compression-level: 0
-        retention-days: 1
-        if-no-files-found: error
-
-  native-integration:
-    name: Analytical regression and ns-3 smoke
-    needs: native-build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    # Runs compiled simulator code, so it holds no write scope. Recording
-    # happens in archive-native-integration.
-    permissions:
-      contents: read
-
-    steps:
-    - name: Check out source
-      uses: actions/checkout@v7
-      with:
-        # The prebuilt runtime replaces the native tree, so the expensive
-        # recursive ns-3 clone is not needed here.
-        submodules: false
-        persist-credentials: false
-
-    - name: Set up the locked Python environment
-      uses: ./.github/actions/python-env
-
-    - name: Unpack the native runtime built once for this run
-      uses: ./.github/actions/native-runtime
-      with:
-        artifact: ${{ needs.native-build.outputs.runtime_artifact }}
-
-    - name: Run analytical regression suite
-      run: bash ./.github/workflows/test.sh
-
-    - name: Run 3D Ring ns-3 smoke experiment
-      run: timeout --foreground 5m bash ./experiments/ring_3d/smoke.sh
-
-    - name: Verify 3D Ring retry-exhaustion telemetry
-      run: timeout --foreground 2m bash ./experiments/ring_3d/failure_liveness.sh
-
-    # Five runs of an 8-rank profile: the recovery arm, its admission
-    # reference, a same-seed repeat, the short-timeout race, and a DCQCN arm.
-    # Measured at 3m09s locally on four cores.
-    - name: Verify 3D Ring recovery-domain forgiveness
-      run: timeout --foreground 12m bash ./experiments/ring_3d/forgiveness_smoke.sh
-
-    - name: Verify separate DBLP injected-loss profile
-      run: timeout --foreground 2m bash ./experiments/dblp/smoke.sh
-
-    - name: Generate Llama 3 70B-class bucket trace
-      run: |
-        uv run --locked python experiments/ring_3d/generate.py \
-          --profile experiments/ring_3d/profiles/llama3_70b_16.json \
-          --output runs/ring_3d/llama3_70b_16 --clean
-
-    - name: Publish 3D Ring researcher report
-      if: always()
-      run: |
-        uv run --locked python experiments/ring_3d/report.py \
-          --profile experiments/ring_3d/profiles/smoke_8.json \
-          --run-dir runs/ring_3d/smoke_8 \
-          --output runs/ring_3d/smoke_8/research_report.md
-        cat runs/ring_3d/smoke_8/research_report.md >> "$GITHUB_STEP_SUMMARY"
-
-    - name: Upload 3D Ring researcher report
-      if: always()
-      uses: actions/upload-artifact@v7
-      with:
-        name: ring-3d-research-report-${{ github.run_id }}
-        path: runs/ring_3d/smoke_8/research_report.md
-        if-no-files-found: error
-
-    - name: Upload 3D Ring reproducibility bundle
-      if: always()
-      uses: actions/upload-artifact@v7
-      with:
-        name: ring-3d-smoke-results-${{ github.run_id }}
-        path: runs/ring_3d/smoke_8
-        if-no-files-found: ignore
-
-    - name: Upload 3D Ring retry-exhaustion bundle
-      if: always()
-      uses: actions/upload-artifact@v7
-      with:
-        name: ring-3d-retry-exhaustion-${{ github.run_id }}
-        path: runs/ring_3d/retry_exhaustion_8
-        if-no-files-found: ignore
-
-    - name: Upload Llama 3 70B-class bucket trace
-      if: always()
-      uses: actions/upload-artifact@v7
-      with:
-        name: ring-3d-llama3-70b-16-trace-${{ github.run_id }}
-        path: runs/ring_3d/llama3_70b_16
-        if-no-files-found: ignore
-
-  archive-native-integration:
-    name: Record the analytical regression and ns-3 smoke
-    needs: [ native-integration, ledger ]
-    if: ${{ always() }}
-    runs-on: ubuntu-24.04
-    # Sink jobs run at the hosted ceiling: this one archives three bundles,
-    # and the smoke bundles now carry raw transport streams whose size
-    # scales with however long the smoke sims ran. Inner steps own the real
-    # deadlines; the wall clock only reaps a wedged runner.
-    timeout-minutes: 360
-    # A sink job: the only place a write scope exists for this branch of the
-    # graph. It runs `gh` and `tar` over downloaded bundles and executes
-    # nothing from them.
-    permissions:
-      contents: write
-      issues: write
-
-    steps:
-    - name: Check out the publishing tools
-      uses: actions/checkout@v7
-      with:
-        persist-credentials: false
-        sparse-checkout: |
-          .github/actions
-          .github/scripts
-        sparse-checkout-cone-mode: false
-
-    - name: Fetch the researcher report
-      continue-on-error: true
-      uses: actions/download-artifact@v8
-      with:
-        name: ring-3d-research-report-${{ github.run_id }}
-        path: runs/ring_3d/smoke_8
-
-    - name: Persist the 3D Ring researcher report
-      uses: ./.github/actions/ledger-publish
-      with:
-        issue: ${{ needs.ledger.outputs.issue }}
-        key: native-integration
-        title: Analytical regression and ns-3 smoke
-        body-file: runs/ring_3d/smoke_8/research_report.md
-        status: ${{ needs.native-integration.result }}
-
-    - name: Archive the 3D Ring smoke bundle
-      # A ledger failure must not cost the archives, and an earlier archive's
-      # failure must not cost the later ones. Cancellation still stops the job.
-      if: ${{ !cancelled() }}
-      uses: ./.github/actions/release-archive
-      with:
-        tag: ${{ needs.ledger.outputs.release_tag }}
-        artifact: ring-3d-smoke-results-${{ github.run_id }}
-        asset-name: ring-3d-smoke-results
-
-    - name: Archive the retry-exhaustion bundle
-      # A ledger failure must not cost the archives, and an earlier archive's
-      # failure must not cost the later ones. Cancellation still stops the job.
-      if: ${{ !cancelled() }}
-      uses: ./.github/actions/release-archive
-      with:
-        tag: ${{ needs.ledger.outputs.release_tag }}
-        artifact: ring-3d-retry-exhaustion-${{ github.run_id }}
-        asset-name: ring-3d-retry-exhaustion
-
-    - name: Archive the Llama 3 70B-class bucket trace
-      # A ledger failure must not cost the archives, and an earlier archive's
-      # failure must not cost the later ones. Cancellation still stops the job.
-      if: ${{ !cancelled() }}
-      uses: ./.github/actions/release-archive
-      with:
-        tag: ${{ needs.ledger.outputs.release_tag }}
-        artifact: ring-3d-llama3-70b-16-trace-${{ github.run_id }}
-        asset-name: ring-3d-llama3-70b-16-trace
 
   cluster-build:
     name: Build the cluster runtime
@@ -320,10 +116,10 @@ jobs:
     # so it starts the moment the run does and the wave provisions as soon
     # as the bundles exist.
     runs-on: ubuntu-24.04
-    # One cold LTO build of ns-3 per cell on four hosted cores - the same
-    # rationale as native-build's budget: double the coin-flip 60, and let
-    # the build's own progress be the signal. The compiler cache brings
-    # the warm path far under this.
+    # One cold LTO build of ns-3 per cell on four hosted cores. 60 minutes
+    # sat close enough to a cold build to be a coin flip; double it and let
+    # the build's own progress be the signal. The compiler cache brings the
+    # warm path far under this.
     timeout-minutes: 120
     permissions:
       contents: read
@@ -337,11 +133,10 @@ jobs:
       matrix:
         march: [ x86-64-v3, x86-64-v4 ]
     outputs:
-      # One definition site for the artifact prefix, the same discipline
-      # the native-runtime artifact follows; each cluster node appends the
-      # ISA level it selects for itself. Every cell writes the identical
-      # value (a pure function of the run id), so last-writer-wins across
-      # the matrix is deterministic.
+      # One definition site for the artifact prefix; each cluster node
+      # appends the ISA level it selects for itself. Every cell writes the
+      # identical value (a pure function of the run id), so last-writer-wins
+      # across the matrix is deterministic.
       runtime_artifact_prefix: cluster-runtime-${{ github.run_id }}
 
     steps:
@@ -351,12 +146,11 @@ jobs:
         submodules: recursive
         persist-credentials: false
 
-    # Content-addressed like the native-build cache: identical native
-    # sources and cluster scripts share one entry, and a near miss still
-    # warms through the prefix fallback. The conda toolchain floats per
-    # solve, so ccache's compiler_check=content (configured in
-    # ci/dcs/build.sh) is what keeps a foreign entry harmless - a miss,
-    # never a wrong object file. The ISA level lives in the prefix: the
+    # Content-addressed: identical native sources and cluster scripts share
+    # one entry, and a near miss still warms through the prefix fallback.
+    # The conda toolchain floats per solve, so ccache's
+    # compiler_check=content (configured in ci/dcs/build.sh) is what keeps a
+    # foreign entry harmless - a miss, never a wrong object file. The ISA level lives in the prefix: the
     # cells' object sets are disjoint, and one shared key would leave the
     # second cell's save colliding with the first's.
     - name: Restore trusted compiler cache
@@ -388,10 +182,9 @@ jobs:
         if-no-files-found: error
 
     - name: Publish compiler cache from a trusted ref
-      # Same trust boundary as .github/actions/native-build: only a push to
-      # main publishes an entry other refs can restore, and only on an
-      # exact-key miss so one entry exists per distinct build input. Change
-      # the two predicates together.
+      # The trust boundary: only a push to main publishes an entry other
+      # refs can restore, and only on an exact-key miss so one entry exists
+      # per distinct build input. Change the two predicates together.
       if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.restore.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@v6
       with:
@@ -509,23 +302,26 @@ jobs:
         sparse-checkout: .github/workflows/evaluation-matrix.json
         sparse-checkout-cone-mode: false
 
-    # The matrix is data: one record per evaluation pair, including its
-    # rationale in `notes`. Adding an arm is one JSON record, not a
-    # copy-pasted job. `gate` selects opt-in families.
+    # The matrix is data: one record per experiment, including its rationale
+    # in `notes`. Adding an arm is one JSON record, not a copy-pasted job.
+    # `kind` picks the command it runs; `gate` picks the family it joins.
     - name: Select the gated evaluation records
       id: plan
       env:
+        # A push runs every family; a dispatch runs the families it names.
+        INCLUDE_ALWAYS: ${{ github.event_name != 'workflow_dispatch' || inputs.run_always }}
         INCLUDE_STRUCTURAL: ${{ github.event_name == 'workflow_dispatch' && inputs.run_structural_studies }}
         INCLUDE_REGIME_MAP: ${{ github.event_name == 'workflow_dispatch' && inputs.run_regime_map }}
         INCLUDE_FORGIVE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_forgive_studies }}
       run: |
         set -euo pipefail
         matrix="$(jq -c \
+          --arg always "$INCLUDE_ALWAYS" \
           --arg structural "$INCLUDE_STRUCTURAL" \
           --arg regime_map "$INCLUDE_REGIME_MAP" \
           --arg forgive "$INCLUDE_FORGIVE" '
           [ .[]
-            | select(.gate == "always"
+            | select((.gate == "always" and $always == "true")
                      or (.gate == "structural" and $structural == "true")
                      or (.gate == "regime_map" and $regime_map == "true")
                      or (.gate == "forgive" and $forgive == "true"))
@@ -535,14 +331,10 @@ jobs:
 
   evaluations:
     name: ${{ matrix.name }}
-    # Still independent of native-build (the apt-toolchain build feeding
-    # the hosted smoke path). Cluster arms consume the runtime bundles the
-    # cluster-build matrix compiled once, so the wave gates on both cells:
-    # a broken build now costs zero SLURM allocations - nothing is
-    # provisioned - instead of sixteen runners discovering it
-    # independently. Structural arms build for themselves through the
-    # shared compiler cache and merely inherit this wait, which is
-    # acceptable for a dispatch-only family.
+    # Every arm consumes the runtime bundles the cluster-build matrix
+    # compiled once, so the wave gates on both cells: a broken build costs
+    # zero SLURM allocations - nothing is provisioned - instead of sixteen
+    # runners discovering it independently.
     #
     # The store seed is sequenced before the wave but is only an
     # optimization layer: every arm falls back to a private extraction,
@@ -575,7 +367,7 @@ jobs:
       ledger_issue: ${{ fromJSON(needs.ledger.outputs.issue || '0') }}
       release_tag: ${{ needs.ledger.outputs.release_tag }}
       ledger_key: ${{ matrix.ledger_key }}
-      comparison: ${{ matrix.comparison }}
+      kind: ${{ matrix.kind }}
       comparison_seed: ${{ matrix.comparison_seed }}
       execution_timeout_minutes: ${{ matrix.execution_timeout_minutes }}
       simulation_timeout_seconds: ${{ matrix.simulation_timeout_seconds }}
@@ -658,9 +450,6 @@ jobs:
     needs:
     - ledger
     - python-quality
-    - native-build
-    - native-integration
-    - archive-native-integration
     - cluster-build
     - archive-cluster-runtime
     - evaluations

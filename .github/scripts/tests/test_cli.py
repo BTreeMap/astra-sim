@@ -139,18 +139,18 @@ class LedgerLifecycle(unittest.TestCase):
             )
         )
 
-        report = self._report("native.md", "# Native\n\nAll green.\n")
-        self.assertEqual(self._publish("native-integration", report), 0)
+        report = self._report("smoke.md", "# Smoke\n\nAll green.\n")
+        self.assertEqual(self._publish("smoke", report), 0)
         self.assertEqual(len(self.gh.threads[1]), 1)
 
         # Re-publishing the identical report is a no-op on the remote state.
         before = list(self.gh.threads[1])
-        self._publish("native-integration", report)
+        self._publish("smoke", report)
         self.assertEqual(self.gh.threads[1], before)
 
         self.assertEqual(cli.main(["close", "--issue", "1"]), 0)
         self.assertEqual(self.gh.issues[1]["state"], "closed")
-        self.assertIn("native-integration", str(self.gh.issues[1]["body"]))
+        self.assertIn("smoke", str(self.gh.issues[1]["body"]))
 
     def test_open_is_idempotent_across_reruns(self) -> None:
         cli.main(["open"])

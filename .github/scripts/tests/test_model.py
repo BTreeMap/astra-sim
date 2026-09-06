@@ -98,12 +98,12 @@ class SplitBodyLaws(unittest.TestCase):
 
 class MarkerRoundTrip(unittest.TestCase):
     def test_render_then_parse_is_identity(self) -> None:
-        section = Section("native-integration", "Native", "body", Status.FAILURE)
+        section = Section("smoke", "Smoke", "body", Status.FAILURE)
         for part in render_section(section, CONTEXT):
             marker = parse_marker(part)
             self.assertIsNotNone(marker)
             assert marker is not None
-            self.assertEqual(marker.key, "native-integration")
+            self.assertEqual(marker.key, "smoke")
             self.assertEqual(marker.digest, digest_of("body"))
             self.assertIs(marker.status, Status.FAILURE)
 
@@ -119,7 +119,7 @@ class MarkerRoundTrip(unittest.TestCase):
         )
 
     def test_key_domain_is_closed(self) -> None:
-        self.assertEqual(parse_key(" native-integration "), "native-integration")
+        self.assertEqual(parse_key(" smoke "), "smoke")
         for bad in ("", "has space", "emoji✨", "x" * 97, "slash/key"):
             with self.subTest(bad=bad), self.assertRaises(LedgerError):
                 parse_key(bad)
