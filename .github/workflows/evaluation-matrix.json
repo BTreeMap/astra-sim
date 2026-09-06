@@ -387,7 +387,7 @@
     "simulation_timeout_seconds": 396000,
     "require_congestion": true,
     "gate": "always",
-    "notes": "pp=2 puts non-sheddable pipeline activations on the degraded knee fabric alongside sheddable DP gradients. The policy's eligibility is dp_all_reduce_only, so PP flow completion must stay intact while DP is relieved. Timeout chain: the per-arm simulation cap of 396000 s does not sum to the 6720 min whole-comparison budget across 3 arms, so the walltime is the backstop and the per-arm cap only bounds one wedged arm; revisit both if an arm is added."
+    "notes": "pp=2 puts non-sheddable pipeline activations on the degraded knee fabric alongside sheddable DP gradients. The policy's eligibility is dp_all_reduce_only, so PP flow completion must stay intact while DP is relieved. Runs selective repair: under go-back-N the three arms never finished inside the 4d20h walltime in three waves (64 MiB pipeline flows re-carry a whole window per trim), and the 64-rank fan-in family already needed 45 to 56 h. Timeout chain: the per-arm simulation cap of 396000 s does not sum to the 6720 min whole-comparison budget across 3 arms, so the walltime is the backstop and the per-arm cap only bounds one wedged arm; revisit both if an arm is added."
   },
   {
     "name": "Llama 3 70B 64-rank fan-in direct1 pair",
@@ -418,6 +418,21 @@
     "require_congestion": true,
     "gate": "always",
     "notes": "Degraded 1:1 sweep point and the completion canary: judge the matrix by this arm first, since it is the window that collapsed on the designed-2:1 fabric. Timeout chain: the per-arm simulation cap of 396000 s does not sum to the 6720 min whole-comparison budget across 3 arms, so the walltime is the backstop and the per-arm cap only bounds one wedged arm; revisit both if an arm is added."
+  },
+  {
+    "name": "Llama 3 70B 64-rank fan-in direct2 selective repair pair",
+    "profile": "experiments/ring_3d/profiles/llama3_70b_64_direct2_sr.json",
+    "run_directory": "runs/ring_3d/llama3_70b_64_fanin/direct2_sr",
+    "artifact_name": "ring-3d-llama3-70b-64-fanin-direct2-sr-comparison",
+    "ledger_key": "llama3-70b-64-fanin-direct2-sr",
+    "comparison": true,
+    "comparison_seed": 314159265,
+    "arm_count": 3,
+    "execution_timeout_minutes": 6720,
+    "simulation_timeout_seconds": 396000,
+    "require_congestion": true,
+    "gate": "always",
+    "notes": "Matched recovery control: direct2 workload and the degraded 8:6 fabric unchanged, selective repair on. Pairs with llama3_70b_64_direct2 (same fabric, go-back-N) for the recovery contrast, and with llama3_70b_64_pp2 (same fabric and recovery, plus pipeline traffic) for the non-sheddable coexistence question. sr2x cannot serve either role because it sits on the 8:4 fabric. Budget mirrors sr2x, about 11 h for 3 arms. Timeout chain: the per-arm simulation cap of 396000 s does not sum to the 6720 min whole-comparison budget across 3 arms, so the walltime is the backstop and the per-arm cap only bounds one wedged arm; revisit both if an arm is added."
   },
   {
     "name": "Llama 3 70B 64-rank fan-in direct4 pair",
@@ -522,7 +537,7 @@
     "simulation_timeout_seconds": 64800,
     "require_congestion": false,
     "gate": "regime_map",
-    "notes": "Regime map point: one characterization arm, no comparison. Both selection probabilities sit at the strict bound, so this single run.py invocation is exactly the fixed-low arm a comparison would have produced. The map tests H1 (sustained oversubscription with fan-in), H2 (burst persistence) and H3 (congestion control on) from docs/agents/next-steps-after-run-117.md at once, under selective repair only. Pre-registered estimands: W, burst drain over its serialization floor, DP span at the burst and aftermath steps, trimmed-to-untrimmed DP flow ratio, RTO count, rate-cut count. Budget mirrors the 64-rank sr2x canary, which ran in about 11 h."
+    "notes": "Cross-binary replicate: this cell is the sr2x fixed-low arm (same seed, 8:4 fabric, direct2, selective repair, p 0.005 everywhere) rerun on the current binary, so its W and DP spans must reproduce the run #117 sr2x fixed-low arm; a drift here is a build regression, not a regime finding. Regime map point: one characterization arm, no comparison. Both selection probabilities sit at the strict bound, so this single run.py invocation is exactly the fixed-low arm a comparison would have produced. The map tests H1 (sustained oversubscription with fan-in), H2 (burst persistence) and H3 (congestion control on) from docs/agents/next-steps-after-run-117.md at once, under selective repair only. Pre-registered estimands: W, burst drain over its serialization floor, DP span at the burst and aftermath steps, trimmed-to-untrimmed DP flow ratio, RTO count, rate-cut count. Budget mirrors the 64-rank sr2x canary, which ran in about 11 h."
   },
   {
     "name": "Regime map 64-rank none direct2 4to1",
