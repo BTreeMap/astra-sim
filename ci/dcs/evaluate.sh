@@ -137,12 +137,15 @@ if ((status == 0)); then
     status="$publish_status"
 fi
 
-# The post-condition. A missing source means the arm died before writing a
-# report; the workflow's publish step says so and the ledger records the
-# absence, so this is not itself a failure.
+# The post-condition. A hard link, not a copy: attest.py appends its
+# Provenance section to report.md afterwards, and the link keeps the
+# kind-named report in the bundle identical to it. A missing source means
+# the arm died before writing a report; the workflow's publish step says so
+# and the ledger records the absence, so this is not itself a failure.
 if [[ -f "$report_source" ]]; then
     mkdir -p "$run_directory"
-    cp "$report_source" "$run_directory/report.md"
+    ln -f "$report_source" "$run_directory/report.md" \
+        || cp "$report_source" "$run_directory/report.md"
 fi
 
 exit "$status"

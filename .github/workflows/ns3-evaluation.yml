@@ -343,7 +343,9 @@ jobs:
     # only path they take to GitHub. Runs on failure too: a failed arm's
     # partial outbox is exactly the forensic record worth collecting.
     needs: evaluate
-    if: ${{ !cancelled() }}
+    # A skipped arm (its provision rejected the kind) left no outbox, so a
+    # courier would only burn an allocation to report an absence.
+    if: ${{ !cancelled() && needs.evaluate.result != 'skipped' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # Authenticates with repository secrets, not the workflow token.
