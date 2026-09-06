@@ -126,12 +126,11 @@ runs:
         large_files+="${size} ${name}"$'\n'
       done < <(find "$source" -type f \
         \( -size +100M -o -name '*.zst.[0-9][0-9][0-9]*' \) -print0)
-      # Raw-log segments are matched by name, not size: cluster arms hash
-      # and delete them (segment_hasher.py) and their outbox excludes any
-      # residue, but hosted structural bundles still carry theirs, and a
-      # segment must always be an individual asset - never a batch member,
-      # or a piece of the reconstructable stream would hide inside a part
-      # tarball. This keeps the two components' domains disjoint: segments
+      # Raw-log segments are matched by name, not size: the arm hashes and
+      # deletes them (segment_hasher.py) and its outbox excludes any residue,
+      # but a segment that does reach here must always be an individual asset
+      # - never a batch member, or a piece of the reconstructable stream
+      # would hide inside a part tarball. This keeps the two components' domains disjoint: segments
       # are individual assets always; the batch planner sees what is left.
 
       # Priority order: the small-file tarball first - reports and

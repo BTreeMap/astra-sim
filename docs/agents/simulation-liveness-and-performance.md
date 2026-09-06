@@ -27,9 +27,9 @@ Evidence that separates the classes without rebuilding anything:
   inflated cost with normal counts is a code or build regression; normal cost
   with exploded counts is a behavioral change (timer churn, retransmission
   storm).
-- CPU-bound setup steps are a built-in runner benchmark. The native-runtime
-  unpack is a ~500 ms gunzip of hundreds of MB; compare its duration across
-  runs before blaming infrastructure. In the August incident it proved the
+- CPU-bound setup steps are a built-in runner benchmark. The cluster runtime
+  install is a gunzip of hundreds of MB; compare its duration across runs
+  before blaming infrastructure. In the August incident it proved the
   runner healthy while the simulator ran 93× slow.
 - Uploaded artifact size per simulated millisecond approximates trace volume
   and therefore packet count. A 93× wall slowdown with normal bytes-per-

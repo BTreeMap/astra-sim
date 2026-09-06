@@ -10,7 +10,7 @@ the reusable modules under `actions/`, and the experiment ledger under
 uv run --locked python -m unittest discover \
   -s .github/scripts/tests -t .github/scripts -v
 uv run --locked python -m compileall -q .github/scripts
-bash -n .github/workflows/setup.sh
+bash -n ci/dcs/evaluate.sh
 actionlint            # optional; lints .github/workflows only
 ```
 
@@ -18,13 +18,13 @@ actionlint            # optional; lints .github/workflows only
 
 ```
 workflows/workflow_main.yml     job graph and the ledger lifecycle
-workflows/ns3-evaluation.yml    one hosted evaluation, called per experiment
+workflows/ns3-evaluation.yml    one cluster evaluation, called per record
+workflows/evaluation-matrix.json  one record per experiment; the data the plan reads
 actions/python-env/             the only definition site for the uv pin
-actions/native-build/           toolchain + trusted ccache + native build
-actions/native-runtime/         unpack the run's single build; never compiles
 actions/ledger-publish/         reconcile one report into the ledger issue
 actions/release-archive/        publish one bundle to the run's release
 scripts/ci_ledger/              the ledger: pure model, `gh` shell, CLI
+../ci/dcs/evaluate.sh           the one experiment command, dispatched on `kind`
 ```
 
 A composite action cannot check out the repository that contains it, so
@@ -38,8 +38,8 @@ pushes leave no record because they start no run: a push whose changed files
 all match the `paths-ignore` list in `workflow_main.yml` (documentation,
 templates, the licence), and a push whose head commit subject contains
 `[skip ci]`, which GitHub applies before any job exists. Neither opens a
-ledger issue or a release; that is the point, since an evaluation wave costs
-31 cluster jobs. Do not add a job-level keyword gate: jobs behind `always()`
+ledger issue or a release; that is the point, since an evaluation wave
+provisions two SLURM runners for every record it selects. Do not add a job-level keyword gate: jobs behind `always()`
 would still run and write "missing" ledger rows, which is what run #118 did. The
 repository accepts no pull requests, so the workflow has no `pull_request`
 trigger and one concurrency group keyed by run id; do not add a second
@@ -47,64 +47,70 @@ concurrency block.
 
 Because runs no longer cancel each other, the account concurrency limit is the
 real budget: **20 jobs on Free, 40 on Pro, shared across every repository in the
-account** ([Limits](https://docs.github.com/en/actions/reference/limits)). A
-push peaks around a dozen jobs, so there is headroom. `max-parallel: 5` on the
-paired matrix equals the matrix size and therefore constrains nothing today; it
-only takes effect if seeds are added.
+account** ([Limits](https://docs.github.com/en/actions/reference/limits)). The
+`evaluations` matrix carries no `max-parallel`, so that limit is the only thing
+pacing a wave.
 
 ## One build per run
 
-`native-build` is the only job that compiles. It packages
-`extern/network_backend/ns-3/build` and `build/astra_analytical/build` into a
-tarball, and every other native job unpacks it through
-`actions/native-runtime`. A push to `main` schedules seven native jobs; without
-this it paid for seven identical ns-3 builds, because they start together and
-no cache can serve a job that has not finished yet.
+`cluster-build` is the only job that compiles. It builds ns-3 with the rootless
+conda toolchain (`ci/dcs/build.sh`) once per instruction-set level, `x86-64-v3`
+and `x86-64-v4`, and uploads each level as a tarball. Every experiment job
+picks the level its own CPU reports from `/proc/cpuinfo` and links against it
+(`ci/dcs/install-runtime.sh`); the cluster fleet never compiles.
 
 Consequences to keep in mind when editing:
 
 - Consumers check out with `submodules: false`. Nothing under `experiments/`
   references `extern/` outside the build directory, and nothing rebuilds; if
   that changes, the submodule fetch has to come back.
-- The tarball must be produced with `tar`, not by handing directories to
-  `upload-artifact`, which drops the executable bit and the analytical build's
+- The bundle must be produced with `tar`, not by handing directories to
+  `upload-artifact`, which drops the executable bit and the runtime env's
   symlinks.
-- ns-3 links with an absolute `RUNPATH`. It resolves only because every hosted
-  job checks out to the same workspace path, so `native-runtime` also exports
-  `LD_LIBRARY_PATH`. A container-based or relocated job would need that export
-  to keep working.
-- Evaluations now start after the build instead of alongside it. That trades a
-  fixed front-loaded delay for six fewer builds. Deliberate, since an
-  evaluation runs for hours.
+- The bundle carries its own runtime libraries, and `install-runtime.sh`
+  exports their path as `ASTRA_SIM_LD_LIBRARY_PATH`. Only the step that runs
+  the simulator promotes it to `LD_LIBRARY_PATH`; job-global, the bundled
+  libssl shadows the system OpenSSL for every later step's tooling.
+- `cluster-seed` publishes both bundles as sealed shared store entries before
+  the wave provisions, so a wave extracts one copy per ISA level instead of one
+  per arm. Sharing is an optimization layer: any miss falls back to a private
+  download and extraction.
+- The wave starts after the build instead of alongside it. That trades a fixed
+  front-loaded delay for provisioning zero SLURM allocations behind a broken
+  build.
 
 ## Compiler-cache trust boundary
 
-`actions/native-build` owns the entire cache lifecycle (restore, configure,
-build, save), so no caller can restore an entry without the matching save
-policy. Two properties keep it safe:
+`cluster-build` owns the entire cache lifecycle in two inline steps, a
+`cache/restore` before the build and a `cache/save` after it, so no other job
+can restore an entry without the matching save policy. Two properties keep it
+safe:
 
 - **Only a push to `main` publishes an entry.** The predicate has exactly one
-  definition site, in the action's `identity` step. A caller's
-  `allow-cache-write` input can restrict it and can never widen it.
-  Pull-request code restores but never writes. There is deliberately **no fork
-  check**: GitHub scopes caches per repository, so a fork and its parent share
-  no cache and cannot contaminate each other. This repository *is* a fork, so
-  testing `github.event.repository.fork` would hold `trusted` at false forever
-  and silently disable the cache.
+  definition site, the `if:` on the save step, which also requires an exact-key
+  miss. There is deliberately **no fork check**: GitHub scopes caches per
+  repository, so a fork and its parent share no cache and cannot contaminate
+  each other. This repository *is* a fork, so testing
+  `github.event.repository.fork` would hold the predicate at false forever and
+  silently disable the cache.
 - **A restored entry cannot produce a wrong object file.** ccache runs with
-  `compiler_check=content` and an empty `sloppiness`, so every hit is validated
-  against the preprocessed source and the compiler binary's own content. A
-  stale, foreign, or corrupted entry can only ever cause a miss.
+  `compiler_check=content` and an empty `sloppiness` (set in `ci/dcs/build.sh`),
+  so every hit is validated against the preprocessed source and the compiler
+  binary's own content. The conda toolchain floats per solve, and that is what
+  makes an entry from a different solve safe: a stale, foreign, or corrupted
+  entry can only ever cause a miss.
 
-The cache key is derived from git's own object names for the paths that decide
-compilation (`astra-sim`, `build`, `extern`, the toolchain script, and the
-action itself) plus the resolved compiler versions. Cache identity is therefore
-a function of the build inputs: two commits with identical native sources share
+The key is `astra-sim-ccache-dcs-v1-<os>-<arch>-<march>-<hash>`, where the hash
+is over `astra-sim/**`, `build/**`, `extern/**`, and `ci/dcs/**`, and the same
+string without the hash is the restore-key. Cache identity is therefore a
+function of the build inputs: two commits with identical native sources share
 one entry, and an entry is published only on an exact-key miss, so the 10 GB
 repository quota holds one entry per distinct build input rather than one per
-commit.
+commit. The ISA level sits in the prefix because the two cells' object sets are
+disjoint and one shared key would leave the second cell's save colliding with
+the first's.
 
-Bump `cache-version` to invalidate everything.
+Bump the `-v1` in the prefix to invalidate everything.
 
 ## Run identity is a value
 
@@ -129,9 +135,9 @@ Had each job derived the tag itself, a partial re-run would compute
 experiment across two releases.
 
 Apply the same discipline to anything else that names a shared resource. The
-native runtime's artifact name is an output of `native-build` for exactly this
-reason: producer and consumer cannot drift apart if there is only one place the
-name exists.
+cluster runtime's artifact prefix is an output of `cluster-build` for exactly
+this reason: producer and consumer cannot drift apart if there is only one
+place the name exists.
 
 ## The permanent archive
 
@@ -225,8 +231,9 @@ archive    contents: write    downloads the bundle, tars it, uploads to the
            issues:   write    release, publishes the ledger section (~2 min)
 ```
 
-Every job that executes experiment code (`native-build`, `native-integration`,
-`aggregate-llama3-evaluation`, and `evaluate`) holds no write scope at all.
+Every job that executes experiment code (`cluster-build`, `cluster-seed`,
+`evaluate`, and the `aggregate` job of each aggregation) holds no write scope
+at all.
 All outward-facing effects live in short sink jobs that run only `gh` and `tar`
 and never execute anything from the artifact they unpack, so a malicious bundle
 cannot reach the token. `contents: write` in particular can push commits and
@@ -257,19 +264,30 @@ is ever interpolated into a shell command.
 
 ## Adding an evaluation
 
-1. Add a job in `workflow_main.yml` that calls `ns3-evaluation.yml`.
-2. Give it `permissions: { contents: read, issues: write }` and pass
-   `ledger_issue: ${{ fromJSON(needs.ledger.outputs.issue || '0') }}` plus a
-   `ledger_key` unique within the run and stable across re-runs.
-3. Add the job to `ledger-close`'s `needs` list, or the ledger will be
-   finalized before that job publishes.
-4. Keep the run inside the account concurrency limit; the comment above
-   `max-parallel` is the accounting.
-5. Depend on `native-build`, not `python-quality`, so the job receives the
-   prebuilt runtime instead of compiling its own, and pass both
-   `runtime_artifact` and `release_tag` through from `needs`.
-6. Give the caller job `contents: write` as a ceiling; the called `evaluate`
-   job reduces itself to read-only.
+Add one record to `workflows/evaluation-matrix.json`. There is no job to
+write: `evaluation-plan` selects the records whose `gate` the run enables, and
+the `evaluations` matrix maps `ns3-evaluation.yml` over the result.
+
+1. `kind` is the command the arm runs: `comparison` for a matched pair,
+   `single` for one run and its report, `smoke` for the four smoke scripts and
+   the 16-rank trace. `ci/dcs/evaluate.sh` dispatches on it; the `provision`
+   job rejects anything else before a runner is minted.
+2. Only a `comparison` may carry a non-zero `comparison_seed` or
+   `require_congestion: true`. `arm_count` is 1 for `single` and `smoke`, 3 for
+   a comparison, and 4 when the profile's `selection_policy.domain` is
+   `recovery`.
+3. `ledger_key`, `artifact_name`, and `run_directory` are unique across the
+   file, and `ledger_key` is stable across re-runs.
+4. `simulation_timeout_seconds` stays under `execution_timeout_minutes * 60`.
+   Where `arm_count * simulation_timeout_seconds` exceeds that budget, `notes`
+   must name `walltime` as the backstop and give the arm count.
+5. A new `gate` value needs a `workflow_dispatch` boolean and its own clause in
+   the plan step's jq filter.
+6. Every record costs three hosted jobs (`provision`, `provision_courier`,
+   `archive`) and two SLURM allocations (the arm and its courier). Keep the
+   wave inside the account concurrency limit.
+
+`scripts/tests/test_evaluation_matrix.py` asserts every rule above.
 
 Assert the privilege split after any change to the job graph:
 

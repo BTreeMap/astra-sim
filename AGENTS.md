@@ -20,7 +20,7 @@
 | Python tooling or Ring-3D experiment | `uv lock --check && uv run --locked python -m compileall -q experiments/ring_3d && uv run --locked python -m unittest discover -s experiments/ring_3d/tests -v` |
 | GitHub Actions workflow, composite action, or CI ledger | `uv run --locked python -m unittest discover -s .github/scripts/tests -t .github/scripts` and, if available, `actionlint` |
 | Shell script | `bash -n <changed-script>` |
-| Native ASTRA-sim or ns-3 integration | `bash .github/workflows/build.sh && bash .github/workflows/test.sh` |
+| Native ASTRA-sim or ns-3 integration | `bash ci/dcs/evaluate.sh smoke` after a local build |
 | Ring-3D native integration | `bash experiments/ring_3d/smoke.sh` after the native build |
 | Any change | `git diff --check` |
 

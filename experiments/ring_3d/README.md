@@ -182,9 +182,8 @@ detector, packet-loss burst, bitmap recovery, or Stop/Probe control protocol.
 CI runs one fixed-seed structural run for this expensive native reference
 concurrently with the sixteen Llama incast comparisons. Its scientific role,
 zero-recovery transport verification at 5.999M queue pairs and reproduction of
-the historical trace shape, needs only a single arm, and its measured
-2.75-hour arm makes a three-arm matched comparison arithmetically impossible
-inside the six-hour hosted-job ceiling. It does not require the Llama
+the historical trace shape, needs only a single arm, so its matrix record
+carries `"kind": "single"`. It does not require the Llama
 queue/PFC congestion gate because its historical source trace had no
 background microburst. It is a reproducibility and transport-scaling
 reference, not a policy result.

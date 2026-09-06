@@ -75,9 +75,8 @@ export LD_LIBRARY_PATH="$BUILDENV/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 # Memoize compilation when the caller mounted a cache directory.
 # compiler_check=content and empty sloppiness keep every
-# correctness-relevant input in the hash - the same policy as
-# .github/actions/native-build, and what makes restoring an entry
-# published by a different conda solve safe: a stale entry is a miss,
+# correctness-relevant input in the hash, which is what makes restoring an
+# entry published by a different conda solve safe: a stale entry is a miss,
 # never a wrong object file.
 if [[ -n "${CCACHE_DIR:-}" ]]; then
     ccache --set-config=cache_dir="$CCACHE_DIR"

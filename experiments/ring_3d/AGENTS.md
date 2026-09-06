@@ -24,8 +24,9 @@ uv run --locked python -m compileall -q experiments/ring_3d
 bash experiments/ring_3d/smoke.sh
 ```
 
-The smoke command requires the native ns-3 target. Build it with
-`bash .github/workflows/build.sh` when needed. Never run a heavy profile merely
+The smoke command requires the native ns-3 target; build it locally when
+needed. `bash ci/dcs/evaluate.sh smoke` runs this smoke script together with
+the three other checks CI runs, in the same order. Never run a heavy profile merely
 as a documentation check; use the smoke profile first and retain artifacts for
 any research result.
 

@@ -28,7 +28,7 @@ The dependencies split into two classes with different rules:
   single unit, never piecewise. If the machine has the full system unit
   (`protoc`, `libprotobuf-dev`, `libboost-dev`,
   `libboost-program-options-dev`, `libopenmpi-dev`, zlib and zstd headers,
-  i.e. what `.github/workflows/setup.sh` installs in CI), build with the
+  the system equivalents of `ci/dcs/buildenv-packages.txt`), build with the
   system compiler and skip micromamba for all of them. If any member is missing,
   take the whole unit from conda-forge, including the conda compiler:
   conda-built libraries carry a newer libstdc++ than the system toolchain,
@@ -156,9 +156,9 @@ if [ "$UNIT" = conda ]; then
 fi
 ```
 
-With `UNIT=system`, none of the conda-specific variables are needed and
-the build behaves exactly like CI's `.github/workflows/setup.sh` +
-`build.sh` path.
+With `UNIT=system`, none of the conda-specific variables are needed. CI
+never takes this branch: `ci/dcs/build.sh` solves the whole ABI-coupled unit
+from `ci/dcs/buildenv-packages.txt` on every builder.
 
 ## 4. Generate the chakra protobuf sources
 
@@ -172,8 +172,8 @@ protoc "$PROTO_DIR/et_def.proto" --proto_path "$PROTO_DIR" --cpp_out "$PROTO_DIR
 
 ## 5. Clean foreign build state
 
-If the working tree ever received an unpacked CI `native-runtime` artifact
-(or any build from another machine), ninja's dependency graph records
+If the working tree ever received an unpacked CI runtime bundle (or any
+build from another machine), ninja's dependency graph records
 absolute paths from that machine; the symptom is
 `ninja: error: '/lib/x86_64-linux-gnu/libc.so.6' ... missing and no known
 rule to make it`. Remove both directories unconditionally before the first

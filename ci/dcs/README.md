@@ -6,24 +6,25 @@ the cluster, nothing from the system but glibc.
 
 ## How it works
 
-Every paired comparison in the evaluation matrix runs on the cluster
-(structural experiments stay GitHub-hosted); the reusable workflow runs two
-jobs per comparison:
+Every record in the evaluation matrix runs on the cluster, whatever its
+`kind`; the reusable workflow runs three jobs per record:
 
-1. `provision` (GitHub-hosted, ~1 min) mints a single-job JIT runner config
-   with a one-hour GitHub App installation token, then pipes it over SSH to
-   the cluster. The SSH key is bound to a forced command
-   (`accept-runner.sh`) that can only submit one SLURM runner job; a
-   leaked key gets no shell. The runner is labeled with the run id, so
-   concurrent experiments can never swap runners.
-2. `Cluster comparison` waits for that runner, downloads the run's
-   prebuilt runtime bundle, and runs the whole three-arm comparison as
-   one job (self-hosted jobs may run 5 days). The fleet never compiles:
-   the `cluster-build` job in the main workflow builds ns-3 once per run
-   with the rootless conda toolchain - one bundle per instruction-set
-   level (`x86-64-v3` fleet floor, `x86-64-v4` for the AVX-512 nodes) -
-   and each node selects its level from `/proc/cpuinfo`. Bundles travel
-   as run artifacts and are archived permanently on the run's release.
+1. `provision` (GitHub-hosted, ~1 min) validates the record's `kind`, then
+   mints a single-job JIT runner config with a one-hour GitHub App
+   installation token and pipes it over SSH to the cluster. The SSH key is
+   bound to a forced command (`accept-runner.sh`) that can only submit one
+   SLURM runner job; a leaked key gets no shell. The runner is labeled with
+   the run id, so concurrent experiments can never swap runners.
+2. `Experiment on the cluster` waits for that runner, downloads the run's
+   prebuilt runtime bundle, and runs `ci/dcs/evaluate.sh <kind>` as one job
+   (self-hosted jobs may run 5 days). The fleet never compiles: the
+   `cluster-build` job in the main workflow builds ns-3 once per run with
+   the rootless conda toolchain - one bundle per instruction-set level
+   (`x86-64-v3` fleet floor, `x86-64-v4` for the AVX-512 nodes) - and each
+   node selects its level from `/proc/cpuinfo`. Bundles travel as run
+   artifacts and are archived permanently on the run's release.
+3. `courier`, on a second freshly minted runner, collects the results the
+   arm left in the scratch outbox and uploads them.
 
 Job scratch lives in the cluster's sanctioned network scratch: the newest
 `/scratch/scratch-space/expires-<date>` directory, whose expiry always
@@ -90,11 +91,13 @@ Administration: Read and write) and install it on this repository only.
 
 ## Routing
 
-Nothing to configure per entry: `comparison: true` in
-`.github/workflows/evaluation-matrix.json` is what routes an experiment to
-the cluster. Aggregations and the ledger are unaffected: the cluster job
-uploads the same `<artifact_name>-<run id>` bundle the hosted single-job
-path produced before the pivot.
+Nothing to configure per entry. Every record in
+`.github/workflows/evaluation-matrix.json` runs here; its `kind` field
+(`comparison`, `single`, or `smoke`) selects which command
+`ci/dcs/evaluate.sh` runs on the node. Whichever it is, the report lands at
+`<run_directory>/report.md` and the courier uploads the same
+`<artifact_name>-<run id>` bundle, so the aggregations and the ledger read
+one shape.
 
 ## Verifying the lifecycle contract
 
