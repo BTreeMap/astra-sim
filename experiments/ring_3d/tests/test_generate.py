@@ -396,9 +396,10 @@ class Ring3DGeneratorTests(unittest.TestCase):
     def test_only_new_families_turn_congestion_control_on(self) -> None:
         """Every arm measured to date ran with no sender reaction at all.
 
-        The regime map sweeps it and the forgiveness DCQCN fixture needs it to
-        have rate cuts to be neutral about. Anything else turning it on would
-        silently rewrite what the earlier waves measured.
+        The regime map sweeps it, the forgiveness DCQCN fixture needs it to
+        have rate cuts to be neutral about, and the congestion-exempt family
+        is refused without it. Anything else turning it on would silently
+        rewrite what the earlier waves measured.
         """
         profiles = sorted(
             (REPOSITORY_ROOT / "experiments/ring_3d/profiles").glob("*.json")
@@ -415,11 +416,15 @@ class Ring3DGeneratorTests(unittest.TestCase):
                 self.assertEqual(mode, "none")
         self.assertEqual(
             swept,
-            {"forgiveness_dcqcn_8.json"}
+            {"forgiveness_dcqcn_8.json", "exempt_smoke_8.json"}
             | {
                 f"regime_64_dcqcn_{algorithm}_{ratio}.json"
                 for algorithm in ("direct2", "direct7")
                 for ratio in ("2to1", "4to1")
+            }
+            | {
+                "regime_64_dcqcn_direct7_4to1_exempt.json",
+                "regime_64_dcqcn_direct2_2to1_exempt.json",
             },
         )
 
@@ -445,6 +450,71 @@ class Ring3DGeneratorTests(unittest.TestCase):
         )
         self.assertEqual(policy["scale"], {"ranks": 8, "steps": 3})
         self.assertEqual(manifest["selection_policy"]["domain"], "recovery")
+
+    def test_congestion_exempt_domain_reaches_the_experiment_configuration(
+        self,
+    ) -> None:
+        profile_path = (
+            REPOSITORY_ROOT / "experiments/ring_3d/profiles/exempt_smoke_8.json"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "experiment"
+            manifest = materialize(profile_path, output)
+            policy = json.loads(
+                (output / "experiment.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(policy["selection_policy"]["domain"], "recovery_exempt")
+        self.assertEqual(
+            policy["selection_policy"]["semantics"],
+            "recovery_forgiveness_cc_exempt",
+        )
+        # The exemption forgives, so it owes the same transport contract the
+        # CC-neutral domain owes.
+        self.assertEqual(
+            policy["selection_policy"]["transport"],
+            {"selective_repair": True, "packet_trimming_ftd": True},
+        )
+        self.assertEqual(
+            manifest["selection_policy"]["domain"], "recovery_exempt"
+        )
+
+    def test_congestion_exempt_domain_refuses_a_fabric_without_dcqcn(self) -> None:
+        """Under CC_MODE 12 no rate cut exists to be exempt from.
+
+        The refusal names the field, because a silent no-op would report as a
+        null result from a mechanism that never ran.
+        """
+        document = json.loads(
+            (
+                REPOSITORY_ROOT / "experiments/ring_3d/profiles/exempt_smoke_8.json"
+            ).read_text(encoding="utf-8")
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            profile_path = Path(temporary_directory) / "profile.json"
+
+            without_dcqcn = json.loads(json.dumps(document))
+            without_dcqcn["network"]["congestion_control"]["mode"] = "none"
+            profile_path.write_text(json.dumps(without_dcqcn), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValueError, "network.congestion_control.mode"
+            ):
+                load_profile(profile_path)
+
+            without_the_key = json.loads(json.dumps(document))
+            del without_the_key["network"]["congestion_control"]
+            profile_path.write_text(json.dumps(without_the_key), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValueError, "network.congestion_control.mode"
+            ):
+                load_profile(profile_path)
+
+            # Everything the CC-neutral domain owes is still owed.
+            without_repair = json.loads(json.dumps(document))
+            del without_repair["network"]["transport_recovery"]["selective_repair"]
+            profile_path.write_text(json.dumps(without_repair), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "selective_repair"):
+                load_profile(profile_path)
 
     def test_admission_domain_writes_no_recovery_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

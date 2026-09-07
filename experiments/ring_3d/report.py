@@ -112,6 +112,10 @@ def _network_health_lines(summary: dict[str, Any]) -> list[str]:
     ]
 
 
+_FORGIVING_DOMAINS = frozenset({"recovery", "recovery_exempt"})
+"""The domains the ledger law binds, and so the ones this section describes."""
+
+
 def _forgiveness_lines(summary: dict[str, Any]) -> list[str]:
     """Render what the recovery domain spent, and whether it stayed lawful.
 
@@ -124,7 +128,7 @@ def _forgiveness_lines(summary: dict[str, Any]) -> list[str]:
     law = forgiveness.get("ledger_law")
     law = law if isinstance(law, dict) else {}
     forgiven_bytes = forgiveness.get("forgiven_bytes") or 0
-    if not forgiven_bytes and law.get("domain") != "recovery":
+    if not forgiven_bytes and law.get("domain") not in _FORGIVING_DOMAINS:
         return []
     health = summary.get("network_health")
     health = health if isinstance(health, dict) else {}
@@ -138,8 +142,10 @@ def _forgiveness_lines(summary: dict[str, Any]) -> list[str]:
         "receiver without ever arriving, so no repair carried them. W' is W "
         "with those bytes removed: the trimmed load the transport still had "
         "to carry again. The ledger law caps shed plus forgiven bytes per "
-        "(receiving rank, training step) and holds only in the recovery "
-        "domain; a violated status invalidates the arm.",
+        "(receiving rank, training step) and holds only in a forgiving "
+        "domain; a violated status invalidates the arm. A CC-exempt flow "
+        "discards the rate cuts it is sent until a receiver refuses to "
+        "forgive one of its trims, which re-arms it.",
         "",
         *_markdown_table(
             ["Signal", "Value"],
@@ -147,6 +153,15 @@ def _forgiveness_lines(summary: dict[str, Any]) -> list[str]:
                 ["Forgiven", _format_optional_bytes(forgiven_bytes)],
                 ["Forgiven ranges", forgiveness.get("forgiven_range_count", 0)],
                 ["Priority pulls", forgiveness.get("priority_pull_count", 0)],
+                [
+                    "CC-exempt flows",
+                    forgiveness.get("cc_exempt_flow_count", 0),
+                ],
+                ["CNPs ignored", forgiveness.get("cnp_ignored_count", 0)],
+                [
+                    "Flows re-armed",
+                    forgiveness.get("cc_rearmed_flow_count", 0),
+                ],
                 [
                     "W' (repaired per offered byte)",
                     _format_optional_ratio(health.get("W_prime")),

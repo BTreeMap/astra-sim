@@ -188,11 +188,29 @@ class SheddingDomain(StrEnum):
     ``admission`` decides before a payload is offered and substitutes the whole
     message. ``recovery`` decides after a switch has already trimmed a packet
     and lets that packet's bytes go, which is the only point at which the
-    policy can act during a congestion episode.
+    policy can act during a congestion episode. ``recovery_exempt`` forgives
+    the same way and additionally lets an eligible flow on a non-critical step
+    ignore congestion signals until the receiver refuses to forgive one of its
+    trims, so the budget is paid in bounded loss rather than in rate.
     """
 
     ADMISSION = "admission"
     RECOVERY = "recovery"
+    RECOVERY_EXEMPT = "recovery_exempt"
+
+
+FORGIVING_DOMAINS: frozenset[SheddingDomain] = frozenset(
+    {SheddingDomain.RECOVERY, SheddingDomain.RECOVERY_EXEMPT}
+)
+"""The domains that decide after the trim, and so need the trimming transport."""
+
+SELECTION_SEMANTICS: dict[SheddingDomain, str] = {
+    SheddingDomain.ADMISSION: "logical_admission_selection",
+    SheddingDomain.RECOVERY: "recovery_forgiveness",
+    SheddingDomain.RECOVERY_EXEMPT: "recovery_forgiveness_cc_exempt",
+}
+"""The contract string the simulator checks the domain against. Total over the
+enum: a domain missing here raises rather than defaulting to admission."""
 
 
 @dataclass(frozen=True)
@@ -209,11 +227,7 @@ class SelectionPolicy:
 
     @property
     def semantics(self) -> str:
-        return (
-            "recovery_forgiveness"
-            if self.domain is SheddingDomain.RECOVERY
-            else "logical_admission_selection"
-        )
+        return SELECTION_SEMANTICS[self.domain]
 
 
 @dataclass(frozen=True)
@@ -497,18 +511,31 @@ def parse_profile_document(document: Any) -> Profile:
     workload = _load_workload(document)
     explicit_clr_schedule = _load_explicit_clr_schedule(document, steps)
     network = load_network(document.get("network"), ranks)
-    if selection_policy.domain is SheddingDomain.RECOVERY:
+    if selection_policy.domain in FORGIVING_DOMAINS:
+        domain_value = selection_policy.domain.value
         recovery = network.transport_recovery
         trimming = network.packet_trimming
         if recovery is None or not recovery.selective_repair:
             raise ValueError(
-                "selection_policy.domain 'recovery' requires "
+                f"selection_policy.domain '{domain_value}' requires "
                 "network.transport_recovery.selective_repair"
             )
         if trimming is None or trimming.mode != "ftd":
             raise ValueError(
-                "selection_policy.domain 'recovery' requires "
+                f"selection_policy.domain '{domain_value}' requires "
                 "network.packet_trimming.mode 'ftd'"
+            )
+        # Under 'none' the sender takes no rate cut to begin with, so an
+        # exemption from rate cuts is vacuous. A profile asking for it has a
+        # mistake in it, not a no-op, and a silent no-op would report as a
+        # null result from a mechanism that never ran.
+        if (
+            selection_policy.domain is SheddingDomain.RECOVERY_EXEMPT
+            and network.congestion_control.mode != "dcqcn"
+        ):
+            raise ValueError(
+                "selection_policy.domain 'recovery_exempt' requires "
+                "network.congestion_control.mode 'dcqcn'"
             )
     microburst_flow_count = _require_positive_int(
         document.get("microburst_flow_count", min(2, ranks // 2)),
@@ -1418,7 +1445,7 @@ def write_experiment_config(
         "p_low_threshold": scaled_threshold(selection_policy.p_low),
         "p_high_threshold": scaled_threshold(selection_policy.p_high),
     }
-    if selection_policy.domain is SheddingDomain.RECOVERY:
+    if selection_policy.domain in FORGIVING_DOMAINS:
         policy_document["domain"] = selection_policy.domain.value
         # The simulator's frontend cannot read network_config.txt, so the
         # transport contract the recovery domain depends on is asserted here

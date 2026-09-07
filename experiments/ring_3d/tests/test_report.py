@@ -438,6 +438,46 @@ class Ring3DReportTests(unittest.TestCase):
         self.assertIn("W' (repaired per offered byte)", report)
         self.assertIn("Forgiven bytes by training step", report)
 
+    def test_report_renders_the_exemption_counters_for_an_exempt_run(
+        self,
+    ) -> None:
+        """The three mechanism counters are pre-registered estimands.
+
+        A wave that cannot see how many flows were exempt, how many rate cuts
+        they discarded, and how many a refusal re-armed cannot tell a null
+        result from a mechanism that never fired.
+        """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run_dir = Path(temporary_directory) / "run"
+            self._write_completed_run(run_dir)
+            summary_path = run_dir / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["forgiveness"] = {
+                "forgiven_bytes": 78_608,
+                "forgiven_range_count": 79,
+                "priority_pull_count": 3,
+                "cc_exempt_flow_count": 42,
+                "cnp_ignored_count": 1_337,
+                "cc_rearmed_flow_count": 9,
+                "forgiven_bytes_by_training_step": {"2": 78_608},
+                "ledger_law": {
+                    "status": "verified",
+                    "domain": "recovery_exempt",
+                    "decision_scale": 1_000_000,
+                    "cell_count": 24,
+                    "forgiven_cell_count": 1,
+                    "violation_count": 0,
+                },
+            }
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            report = render_report(run_dir, self.profile_path)
+
+        self.assertIn("### Forgiveness", report)
+        self.assertIn("| CC-exempt flows | 42 |", report)
+        self.assertIn("| CNPs ignored | 1337 |", report)
+        self.assertIn("| Flows re-armed | 9 |", report)
+
     def test_report_omits_forgiveness_for_an_admission_run(self) -> None:
         """Three zeros and a law that does not apply is not a section."""
         with tempfile.TemporaryDirectory() as temporary_directory:

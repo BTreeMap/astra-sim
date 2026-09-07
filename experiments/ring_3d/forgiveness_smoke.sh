@@ -11,6 +11,7 @@ ADMISSION_OUTPUT="$REPOSITORY_ROOT/runs/ring_3d/forgiveness_smoke_8_admission"
 RERUN_OUTPUT="$REPOSITORY_ROOT/runs/ring_3d/forgiveness_smoke_8_rerun"
 RACE_OUTPUT="$REPOSITORY_ROOT/runs/ring_3d/forgiveness_race_8"
 DCQCN_OUTPUT="$REPOSITORY_ROOT/runs/ring_3d/forgiveness_dcqcn_8"
+EXEMPT_OUTPUT="$REPOSITORY_ROOT/runs/ring_3d/exempt_smoke_8"
 
 RANGE_ALGEBRA="$REPOSITORY_ROOT/extern/network_backend/ns-3/build/scratch/ns3.42-RdmaRangeAlgebra"
 
@@ -49,10 +50,17 @@ uv --project "$REPOSITORY_ROOT" run --locked python "$SCRIPT_DIR/run.py" \
   --profile "$SCRIPT_DIR/profiles/forgiveness_dcqcn_8.json" \
   --output "$DCQCN_OUTPUT" --clean
 
+# The same fabric with the exemption on, where an eligible flow on a
+# non-critical step discards its rate cuts until a receiver refuses to forgive.
+uv --project "$REPOSITORY_ROOT" run --locked python "$SCRIPT_DIR/run.py" \
+  --profile "$SCRIPT_DIR/profiles/exempt_smoke_8.json" \
+  --output "$EXEMPT_OUTPUT" --clean
+
 uv --project "$REPOSITORY_ROOT" run --locked python \
   "$SCRIPT_DIR/check_forgiveness.py" "$OUTPUT" "$ADMISSION_OUTPUT" \
   --rerun "$RERUN_OUTPUT" --race "$RACE_OUTPUT" \
-  --congestion-neutral "$DCQCN_OUTPUT"
+  --congestion-neutral "$DCQCN_OUTPUT" \
+  --congestion-exempt "$EXEMPT_OUTPUT"
 
 # The same inputs with one field broken per case. Each must be refused by
 # name, and none may leave telemetry behind.

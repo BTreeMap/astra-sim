@@ -44,10 +44,43 @@ enum class FlowTerminalOutcome : uint8_t {
 // offered and substitutes the whole message. Recovery decides after a switch
 // has already trimmed a packet and lets that packet's bytes go, which is the
 // only point at which the policy can act during a congestion episode.
+// RecoveryExempt forgives the same way and additionally lets an eligible flow
+// ignore congestion signals until the receiver refuses to forgive one of its
+// trims, so the budget is paid in bounded loss rather than in rate.
 enum class SheddingDomain : uint8_t {
     Admission = 0,
     Recovery,
+    RecoveryExempt,
 };
+
+// Whether a domain decides after the trim. The one eliminator every test of
+// "is this a forgiving domain" goes through, exhaustive so that a fourth
+// variant fails to compile here rather than falling through to admission.
+constexpr bool forgives(SheddingDomain domain) {
+    switch (domain) {
+        case SheddingDomain::Admission:
+            return false;
+        case SheddingDomain::Recovery:
+            return true;
+        case SheddingDomain::RecoveryExempt:
+            return true;
+    }
+    return false;
+}
+
+// The semantics string a profile must name for its domain. Exhaustive for the
+// same reason: the string is the contract the generator writes and this reads.
+constexpr const char* selection_semantics(SheddingDomain domain) {
+    switch (domain) {
+        case SheddingDomain::Admission:
+            return "logical_admission_selection";
+        case SheddingDomain::Recovery:
+            return "recovery_forgiveness";
+        case SheddingDomain::RecoveryExempt:
+            return "recovery_forgiveness_cc_exempt";
+    }
+    return "";
+}
 
 // What the transport should do with one trimmed range. The numbers cross into
 // ns-3 as RdmaHw::RecoveryVerdict and must not drift from it.
@@ -230,6 +263,13 @@ struct FlowRecord {
     // trimmed ranges that took. Recovery domain only.
     uint64_t forgiven_bytes = 0;
     uint32_t forgiven_ranges = 0;
+    // Congestion-exempt domain only. `cc_exempt` records the answer the
+    // transport got at queue-pair creation and is never withdrawn: the flow's
+    // exemption ended, but it was granted, and the telemetry is the record of
+    // that. `cc_rearmed_ns` is when it ended; zero means it never did.
+    bool cc_exempt = false;
+    uint32_t cnp_ignored = 0;
+    uint64_t cc_rearmed_ns = 0;
     // Zero means never; no packet can be trimmed or repaired at time zero.
     uint64_t first_trim_ns = 0;
     uint64_t first_repair_ns = 0;
@@ -265,7 +305,7 @@ class ExperimentTelemetry {
                "failure_reason,decision_hash,start_time_ns,end_time_ns,"
                "timeouts,cnp_received,first_trim_ns,first_repair_ns,"
                "forgiven_bytes,forgiven_ranges,priority_pulls,"
-               "delivered_bytes\n";
+               "delivered_bytes,cc_exempt,cnp_ignored,cc_rearmed_ns\n";
         rank_completion << "rank,completion_time_ns\n";
         collective_events
             << "rank,parallelism_domain,collective_type,training_step,"
@@ -309,7 +349,9 @@ class ExperimentTelemetry {
                     << flow.first_trim_ns << ',' << flow.first_repair_ns << ','
                     << flow.forgiven_bytes << ',' << flow.forgiven_ranges
                     << ',' << flow.priority_pulls << ','
-                    << delivered_bytes(flow) << '\n';
+                    << delivered_bytes(flow) << ','
+                    << (flow.cc_exempt ? "true" : "false") << ','
+                    << flow.cnp_ignored << ',' << flow.cc_rearmed_ns << '\n';
     }
 
     void record_collective_completion(
@@ -503,7 +545,7 @@ inline SheddingDecision evaluate_shedding(const AstraSim::sim_request& request,
     // admission as well would double-spend it. Eligibility is still recorded:
     // it is what makes a flow forgivable later, and it keeps the two domains'
     // eligible populations identical for a matched comparison.
-    if (experiment_config.domain == SheddingDomain::Recovery) {
+    if (forgives(experiment_config.domain)) {
         return decision;
     }
     if (experiment_config.clr_mask_configured) {
@@ -536,8 +578,7 @@ inline SheddingDecision evaluate_shedding(const AstraSim::sim_request& request,
 // this runs on the packet path: an unknown step, a closed ledger, or an
 // exhausted budget all answer "pull".
 inline RecoveryVerdict evaluate_forgiveness(FlowRecord& flow, uint64_t bytes) {
-    if (!experiment_config.enabled ||
-        experiment_config.domain != SheddingDomain::Recovery ||
+    if (!experiment_config.enabled || !forgives(experiment_config.domain) ||
         flow.kind != FlowKind::ForegroundPayload || !flow.admission_eligible) {
         return RecoveryVerdict::Pull;
     }
@@ -559,6 +600,34 @@ inline RecoveryVerdict evaluate_forgiveness(FlowRecord& flow, uint64_t bytes) {
     flow.forgiven_bytes += bytes;
     flow.forgiven_ranges++;
     return RecoveryVerdict::Forgive;
+}
+
+// Whether one queue pair may ignore congestion signals for as long as the
+// receiver keeps forgiving its trims. Asked once, at creation, and total: an
+// unknown step, a critical step, or a budget already spent all answer false,
+// which is the congestion response of a transport without this domain. It
+// spends no budget; only forgiving does. The only mutation is the flow's own
+// record of the answer.
+inline bool evaluate_congestion_exemption(FlowRecord& flow) {
+    if (!experiment_config.enabled ||
+        experiment_config.domain != SheddingDomain::RecoveryExempt ||
+        flow.kind != FlowKind::ForegroundPayload || !flow.admission_eligible) {
+        return false;
+    }
+    const uint32_t step = flow.operation.training_step;
+    const auto clr = experiment_config.clr_mask_by_step.find(step);
+    // A critical step obeys congestion control: its budget is the strict one
+    // and the exemption is not part of what it buys.
+    if (clr == experiment_config.clr_mask_by_step.end() || clr->second) {
+        return false;
+    }
+    const uint32_t dst = static_cast<uint32_t>(flow.dst);
+    if (!forgiveness_ledger.may_forgive(dst, step, 0,
+                                        experiment_config.p_high_threshold)) {
+        return false;
+    }
+    flow.cc_exempt = true;
+    return true;
 }
 
 inline uint16_t priority_group_for_vnet(uint32_t vnet) {
@@ -867,22 +936,23 @@ inline void configure_experiment(const std::string& configuration_path,
                 experiment_config.domain = SheddingDomain::Admission;
             } else if (domain == "recovery") {
                 experiment_config.domain = SheddingDomain::Recovery;
+            } else if (domain == "recovery_exempt") {
+                experiment_config.domain = SheddingDomain::RecoveryExempt;
             } else {
                 throw std::runtime_error(
-                    "selection_policy.domain must be admission or recovery");
+                    "selection_policy.domain must be admission, recovery, or "
+                    "recovery_exempt");
             }
         }
         const char* expected_semantics =
-            experiment_config.domain == SheddingDomain::Recovery
-                ? "recovery_forgiveness"
-                : "logical_admission_selection";
+            selection_semantics(experiment_config.domain);
         if (!policy.contains("semantics") ||
             policy.at("semantics") != expected_semantics) {
             throw std::runtime_error(
                 std::string("selection_policy.semantics must be ") +
                 expected_semantics);
         }
-        if (experiment_config.domain == SheddingDomain::Recovery) {
+        if (forgives(experiment_config.domain)) {
             // The frontend cannot read network_config.txt, so the generator
             // asserts the transport contract here and entry.h checks the
             // assertion against the transport ns-3 actually built. Recovery
@@ -967,7 +1037,7 @@ inline void configure_experiment(const std::string& configuration_path,
         experiment_config.step_count =
             static_cast<uint32_t>(scale.at("steps").get<uint64_t>());
     }
-    if (experiment_config.domain == SheddingDomain::Recovery) {
+    if (forgives(experiment_config.domain)) {
         if (experiment_config.rank_count == 0 ||
             experiment_config.step_count == 0) {
             throw std::runtime_error("recovery domain requires scale");
@@ -1049,8 +1119,7 @@ inline void configure_experiment(const std::string& configuration_path,
 // on its own command-line argument after the experiment is parsed. Run once,
 // after both.
 inline void validate_experiment_contract() {
-    if (!experiment_config.enabled ||
-        experiment_config.domain != SheddingDomain::Recovery) {
+    if (!experiment_config.enabled || !forgives(experiment_config.domain)) {
         return;
     }
     // Recovery reads the mask per trim and answers Pull for a step it does

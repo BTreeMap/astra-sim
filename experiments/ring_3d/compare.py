@@ -12,6 +12,7 @@ from typing import Any, Final
 
 try:
     from .generate import (
+        FORGIVING_DOMAINS,
         REPOSITORY_ROOT,
         SheddingDomain,
         dp_fan_in,
@@ -21,6 +22,7 @@ try:
     from .run import fixed_p_low_baseline, run_experiment
 except ImportError:
     from generate import (
+        FORGIVING_DOMAINS,
         REPOSITORY_ROOT,
         SheddingDomain,
         dp_fan_in,
@@ -924,7 +926,8 @@ def run_comparison(
         if burst_step is not None and burst_step < profile_model.steps
         else None
     )
-    recovery = profile_model.selection_policy.domain is SheddingDomain.RECOVERY
+    recovery_domain = profile_model.selection_policy.domain
+    recovery = recovery_domain in FORGIVING_DOMAINS
     metrics = comparison_metrics(burst_step, aftermath_step, recovery)
 
     per_seed: list[dict[str, Any]] = []
@@ -965,13 +968,21 @@ def run_comparison(
         if recovery:
             # The same budget, spent after the trim instead of before it. Every
             # other input is the arm's own, so the pair isolates the domain.
+            # The arm runs at the profile's own forgiving domain: an exempt
+            # profile compared against a CC-neutral recovery arm would move
+            # two things at once.
+            exempt = recovery_domain is SheddingDomain.RECOVERY_EXEMPT
             arms["recovery_policy"] = {
                 "directory": seed_dir / "recovery_policy",
-                "label": f"seed {seed} recovery-domain policy",
+                "label": (
+                    f"seed {seed} recovery-domain policy (CC-exempt)"
+                    if exempt
+                    else f"seed {seed} recovery-domain policy"
+                ),
                 "p_low": profile_policy.p_low,
                 "p_high": profile_policy.p_high,
                 "allow_clr_exposure": False,
-                "domain": SheddingDomain.RECOVERY,
+                "domain": recovery_domain,
             }
         if analyze_only:
             # Parse, don't validate: an arm's summary.json exists exactly when

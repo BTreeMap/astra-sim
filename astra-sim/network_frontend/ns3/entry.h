@@ -223,6 +223,26 @@ uint8_t recovery_verdict(uint32_t sip,
         AstraSimNs3::evaluate_forgiveness(active->second, length));
 }
 
+// The transport's congestion-exemption callback, asked once per queue pair at
+// creation. It resolves the flow the way the verdict callback does. An unknown
+// five-tuple obeys congestion control: an exemption belongs to a flow the
+// experiment layer can name, and nothing else can be exempted.
+bool congestion_exemption(uint32_t sip,
+                          uint32_t dip,
+                          uint16_t sport,
+                          uint16_t dport) {
+    (void)dport;
+    const uint32_t src = ip_to_node_id(Ipv4Address(sip));
+    const uint32_t dst = ip_to_node_id(Ipv4Address(dip));
+    const FlowKey key = make_flow_key(sport, static_cast<int>(src),
+                                      static_cast<int>(dst));
+    const auto active = active_flow_registry.find(key);
+    if (active == active_flow_registry.end()) {
+        return false;
+    }
+    return AstraSimNs3::evaluate_congestion_exemption(active->second);
+}
+
 void start_rdma_flow(AstraSimNs3::FlowRecord flow,
                      void (*msg_handler)(void*) = nullptr,
                      void* fun_arg = nullptr) {
@@ -460,6 +480,8 @@ void copy_transport_counters(AstraSimNs3::FlowRecord& flow,
     flow.timeouts = q->m_timeouts;
     flow.cnp_received = q->m_cnp_received;
     flow.priority_pulls = q->m_priority_pulls;
+    flow.cnp_ignored = q->m_cnp_ignored;
+    flow.cc_rearmed_ns = q->m_cc_rearmed_ns;
     flow.first_trim_ns = q->m_first_trim_ns;
     flow.first_repair_ns = q->m_first_repair_ns;
     flow.end_time_ns = Simulator::Now().GetNanoSeconds();
@@ -578,8 +600,11 @@ int setup_ns3_simulation(string network_configuration) {
     SetConfig();
     const bool recovery_domain =
         AstraSimNs3::experiment_config.enabled &&
+        AstraSimNs3::forgives(AstraSimNs3::experiment_config.domain);
+    const bool congestion_exempt =
+        AstraSimNs3::experiment_config.enabled &&
         AstraSimNs3::experiment_config.domain ==
-            AstraSimNs3::SheddingDomain::Recovery;
+            AstraSimNs3::SheddingDomain::RecoveryExempt;
     if (recovery_domain) {
         // The experiment configuration asserts the transport contract; this is
         // where the assertion meets the transport that was actually built.
@@ -589,7 +614,8 @@ int setup_ns3_simulation(string network_configuration) {
             return -1;
         }
     }
-    if (!SetupNetwork(qp_finish, qp_fail, recovery_verdict, recovery_domain)) {
+    if (!SetupNetwork(qp_finish, qp_fail, recovery_verdict, recovery_domain,
+                      congestion_exemption, congestion_exempt)) {
         return -1;
     }
     // The experiment's scale sizes the forgiveness ledger and bounds every

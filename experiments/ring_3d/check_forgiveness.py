@@ -205,6 +205,76 @@ def check_congestion_neutrality(run_dir: Path) -> list[str]:
     return []
 
 
+def check_congestion_exemption(run_dir: Path) -> list[str]:
+    """Assert the exemption reached exactly the flows the policy names.
+
+    The exemption is granted once, at queue-pair creation, to an eligible DP
+    payload flow on a non-critical step whose budget is not already spent, and
+    it ends at the receiver's first refusal to forgive. Each clause below is
+    one of those words, read back off telemetry the run already wrote.
+    """
+    failures: list[str] = []
+    flows = _flows(run_dir)
+    if not flows:
+        return ["congestion-exempt run emitted no flow telemetry"]
+
+    incomplete = [flow for flow in flows if flow["terminal_outcome"] != "completed"]
+    if incomplete:
+        failures.append(
+            f"{len(incomplete)} flows did not complete; the exemption must not "
+            "convert a transfer into a failure"
+        )
+
+    clr_steps = _clr_steps(run_dir)
+    exempt = [flow for flow in flows if flow["cc_exempt"] == "true"]
+    for flow in exempt:
+        if flow["flow_kind"] != "foreground_payload":
+            failures.append(f"exempted a {flow['flow_kind']} flow")
+        if flow["admission_eligible"] != "true":
+            failures.append("exempted an ineligible flow")
+        if flow["training_step"] in clr_steps:
+            failures.append(
+                f"exempted a flow on critical step {flow['training_step']}"
+            )
+    if not exempt:
+        failures.append("no flow was exempted; the exemption never fired")
+    if not any(int(flow["cnp_ignored"]) for flow in exempt):
+        failures.append(
+            "no exempt flow ignored a rate cut; the exemption cost the "
+            "congestion control nothing"
+        )
+    for flow in flows:
+        if flow["cc_exempt"] != "true" and int(flow["cnp_ignored"]):
+            failures.append(
+                f"a non-exempt {flow['flow_kind']} flow ignored "
+                f"{flow['cnp_ignored']} rate cuts"
+            )
+    # A re-armed flow is one a receiver refused to forgive. Refusal arrives as
+    # a PULL, and the PULL's own rate cut is taken, so the flow must show one.
+    for flow in flows:
+        if int(flow["cc_rearmed_ns"]) == 0:
+            continue
+        if flow["cc_exempt"] != "true":
+            failures.append("a flow that was never exempt was re-armed")
+        if int(flow["cnp_received"]) == 0:
+            failures.append(
+                "a re-armed flow took no rate cut, so the refusal that "
+                "re-armed it was not charged"
+            )
+
+    law = _summary(run_dir)["forgiveness"]["ledger_law"]
+    if law["status"] != "verified":
+        failures.append(f"per-(dst, step) ledger law is {law['status']}: {law}")
+
+    forgiveness = _summary(run_dir)["forgiveness"]
+    print(
+        f"congestion-exempt: {len(exempt)} exempt flows, "
+        f"{forgiveness['cnp_ignored_count']} CNPs ignored, "
+        f"{forgiveness['cc_rearmed_flow_count']} flows re-armed"
+    )
+    return failures
+
+
 def _identical_reruns(first: Path, second: Path) -> list[str]:
     """Two runs of one profile at one seed must produce identical telemetry."""
     left = (first / "telemetry" / "flow_events.csv").read_bytes()
@@ -238,6 +308,11 @@ def main() -> int:
         type=Path,
         help="a DCQCN run whose rate cuts must account for every trim",
     )
+    parser.add_argument(
+        "--congestion-exempt",
+        type=Path,
+        help="a DCQCN run whose eligible flows may ignore their rate cuts",
+    )
     arguments = parser.parse_args()
     failures = check(arguments.recovery.resolve(), arguments.admission.resolve())
     if arguments.rerun is not None:
@@ -249,6 +324,10 @@ def main() -> int:
     if arguments.congestion_neutral is not None:
         failures.extend(
             check_congestion_neutrality(arguments.congestion_neutral.resolve())
+        )
+    if arguments.congestion_exempt is not None:
+        failures.extend(
+            check_congestion_exemption(arguments.congestion_exempt.resolve())
         )
     if failures:
         for failure in failures:

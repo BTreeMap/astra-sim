@@ -58,6 +58,14 @@ def _optional_nonnegative_int(row: dict[str, str], key: str) -> int:
     return parsed
 
 
+def _optional_bool(row: dict[str, str], key: str) -> bool:
+    """Absence is false: a column a run never wrote asserts nothing."""
+    value = row.get(key)
+    if value is None or value == "":
+        return False
+    return _as_bool(row, key)
+
+
 def iter_csv(path: Path) -> Iterator[dict[str, str]]:
     """Yield telemetry rows without materializing the file.
 
@@ -393,6 +401,11 @@ def _forgiven_by_step(
     }
 
 
+_FORGIVING_DOMAINS: Final = frozenset({"recovery", "recovery_exempt"})
+"""The domains the budget law binds. Admission sheds by a per-flow hash draw
+rather than a per-cell budget, so the law caps nothing there."""
+
+
 def _check_ledger_law(
     cells: dict[tuple[str, str], dict[str, int]],
     manifest: dict[str, Any] | None,
@@ -421,7 +434,7 @@ def _check_ledger_law(
     if not isinstance(policy, dict) or clr_steps is None:
         return {"status": "not_available", "cell_count": len(cells)}
     domain = policy.get("domain")
-    if domain != "recovery":
+    if domain not in _FORGIVING_DOMAINS:
         return {
             "status": "not_applicable",
             "domain": domain,
@@ -696,7 +709,7 @@ class _FctJoin:
 
 
 _HOST_TRANSPORT_EVENTS: Final = frozenset(
-    {"rto_fired", "cnp_taken", "clipped_trim"}
+    {"rto_fired", "cnp_taken", "clipped_trim", "cnp_ignored", "cc_rearmed"}
 )
 
 
@@ -743,6 +756,12 @@ def _summarize_transport_events(ns3_dir: Path) -> dict[str, Any]:
         # retransmission timeout is a missing ACK, a rate cut is a CNP.
         "rto_fired",
         "cnp_taken",
+        # The congestion-exempt domain's two reactions: a rate cut the sender
+        # discarded while exempt, and the PULL that ended one exemption. Both
+        # carry no packet, so both are counts and no bytes on the control
+        # plane.
+        "cnp_ignored",
+        "cc_rearmed",
         # A trim whose range the receiver already partly holds, so the verdict
         # was asked about fewer bytes than the packet carried. Those bytes were
         # delivered, so the event carries a count and no bytes.
@@ -1079,6 +1098,7 @@ _COUNTER_FIELDS: Final = (
     "forgiven_bytes",
     "forgiven_ranges",
     "priority_pulls",
+    "cnp_ignored",
 )
 """Telemetry columns summed verbatim. The column name is the only name they
 have, so the totals stay keyed by it rather than restating each one."""
@@ -1147,6 +1167,8 @@ class _FlowStatistics:
         "failed_count",
         "flow_count",
         "foreground_traffic",
+        "cc_exempt_count",
+        "cc_rearmed_count",
         "shed_count",
         "shed_logical_bytes",
         "total_logical_bytes",
@@ -1162,6 +1184,11 @@ class _FlowStatistics:
         self.completed_count = 0
         self.failed_count = 0
         self.shed_count = 0
+        # Flows the transport was told it could exempt, and the subset whose
+        # exemption a PULL ended. Neither is a byte count, so neither belongs
+        # in the summed counters.
+        self.cc_exempt_count = 0
+        self.cc_rearmed_count = 0
         self.total_logical_bytes = 0
         self.total_physical_bytes = 0
         self.shed_logical_bytes = 0
@@ -1238,6 +1265,10 @@ class _FlowStatistics:
         self.total_physical_bytes += physical_bytes
         for field in _COUNTER_FIELDS:
             self.counters[field] += _optional_nonnegative_int(row, field)
+        self.cc_exempt_count += _optional_bool(row, "cc_exempt")
+        self.cc_rearmed_count += (
+            _optional_nonnegative_int(row, "cc_rearmed_ns") > 0
+        )
 
         self.total_traffic.add(logical_bytes, physical_bytes)
         if kind in _FOREGROUND_LOGICAL_KINDS:
@@ -1427,6 +1458,12 @@ def summarize(
             "forgiven_bytes": statistics.counters["forgiven_bytes"],
             "forgiven_range_count": statistics.counters["forgiven_ranges"],
             "priority_pull_count": statistics.counters["priority_pulls"],
+            # What the congestion exemption did: how many flows were granted
+            # one, how many rate cuts they discarded, and how many exemptions
+            # a receiver's refusal to forgive ended.
+            "cc_exempt_flow_count": statistics.cc_exempt_count,
+            "cnp_ignored_count": statistics.counters["cnp_ignored"],
+            "cc_rearmed_flow_count": statistics.cc_rearmed_count,
             "forgiven_bytes_by_training_step": _forgiven_by_step(
                 statistics.ledger
             ),

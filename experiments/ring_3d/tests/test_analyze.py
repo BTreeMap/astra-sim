@@ -55,6 +55,9 @@ FLOW_FIELDS = [
     "forgiven_ranges",
     "priority_pulls",
     "delivered_bytes",
+    "cc_exempt",
+    "cnp_ignored",
+    "cc_rearmed_ns",
 ]
 
 COLLECTIVE_FIELDS = [
@@ -483,11 +486,11 @@ class Ring3DAnalysisTests(unittest.TestCase):
                 {
                     "clr_mask": str(mask),
                     "selection_policy": {
-                        "semantics": (
-                            "recovery_forgiveness"
-                            if domain == "recovery"
-                            else "logical_admission_selection"
-                        ),
+                        "semantics": {
+                            "admission": "logical_admission_selection",
+                            "recovery": "recovery_forgiveness",
+                            "recovery_exempt": "recovery_forgiveness_cc_exempt",
+                        }[domain],
                         "domain": domain,
                         "p_low": p_low,
                         "p_high": p_high,
@@ -522,6 +525,43 @@ class Ring3DAnalysisTests(unittest.TestCase):
         self.assertEqual(forgiveness["forgiven_bytes_by_training_step"], {"2": 100})
         self.assertEqual(forgiveness["ledger_law"]["status"], "verified")
         self.assertEqual(forgiveness["ledger_law"]["forgiven_cell_count"], 1)
+
+    def test_exemption_counters_reach_the_summary(self) -> None:
+        """The three mechanism counters, and the law still binding the domain.
+
+        The exemption spends no budget, so the ledger law reads exactly as it
+        does in the CC-neutral domain; what the exempt arm adds is the count
+        of flows granted an exemption, the rate cuts they discarded, and the
+        exemptions a receiver's refusal ended.
+        """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            telemetry = root / "telemetry"
+            exempt = self.eligible_flow("4", "2", 1_000, 100, "10001")
+            exempt.update(
+                {"cc_exempt": "true", "cnp_ignored": "7", "cc_rearmed_ns": "500"}
+            )
+            still_exempt = self.eligible_flow("5", "2", 1_000, 0, "10002")
+            still_exempt.update(
+                {"cc_exempt": "true", "cnp_ignored": "5", "cc_rearmed_ns": "0"}
+            )
+            obeying = self.eligible_flow("6", "2", 1_000, 0, "10003")
+            obeying.update(
+                {"cc_exempt": "false", "cnp_ignored": "0", "cc_rearmed_ns": "0"}
+            )
+            self.write_telemetry(telemetry, [exempt, still_exempt, obeying])
+            manifest = self.write_recovery_manifest(
+                root, ("1",), 0.005, 0.1, domain="recovery_exempt"
+            )
+
+            summary = summarize(telemetry, manifest_path=manifest)
+
+        forgiveness = summary["forgiveness"]
+        self.assertEqual(forgiveness["cc_exempt_flow_count"], 2)
+        self.assertEqual(forgiveness["cnp_ignored_count"], 12)
+        self.assertEqual(forgiveness["cc_rearmed_flow_count"], 1)
+        self.assertEqual(forgiveness["ledger_law"]["status"], "verified")
+        self.assertEqual(forgiveness["ledger_law"]["domain"], "recovery_exempt")
 
     def test_ledger_law_rejects_a_cell_over_its_budget(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -525,6 +525,71 @@ class Ring3DComparisonTests(unittest.TestCase):
         report = render_comparison_report(comparison)
         self.assertIn("## Recovery-domain relief over fixed-low", report)
 
+    def test_congestion_exempt_profile_builds_four_arms_at_its_own_domain(
+        self,
+    ) -> None:
+        """The recovery arm runs the profile's own forgiving domain.
+
+        Running the CC-neutral domain against a CC-exempt profile would move
+        two things between the arms at once and the comparison would answer
+        neither question.
+        """
+
+        def fake_run_experiment(
+            _profile: Path, output: Path, **_kwargs: object
+        ) -> dict[str, object]:
+            output.mkdir(parents=True, exist_ok=True)
+            (output / "summary.json").write_text(
+                json.dumps(congested_summary()), encoding="utf-8"
+            )
+            return {}
+
+        labels: list[str] = []
+
+        def spy_require_primary_analysis(
+            summary: dict[str, object], run_label: str
+        ) -> None:
+            labels.append(run_label)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with patch(
+                "experiments.ring_3d.compare.run_experiment",
+                side_effect=fake_run_experiment,
+            ) as mocked_run, patch(
+                "experiments.ring_3d.compare.require_primary_analysis",
+                side_effect=spy_require_primary_analysis,
+            ):
+                comparison = run_comparison(
+                    REPOSITORY_ROOT
+                    / "experiments/ring_3d/profiles/exempt_smoke_8.json",
+                    Path(temporary_directory) / "comparison",
+                    [17],
+                )
+
+        self.assertEqual(mocked_run.call_count, 4)
+        arms = [
+            (
+                call.kwargs["p_low"],
+                call.kwargs["p_high"],
+                call.kwargs["domain"].value,
+            )
+            for call in mocked_run.call_args_list
+        ]
+        self.assertEqual(
+            arms,
+            [
+                (0.005, 0.005, "admission"),
+                (0.1, 0.1, "admission"),
+                (0.005, 0.1, "admission"),
+                (0.005, 0.1, "recovery_exempt"),
+            ],
+        )
+        self.assertIn("seed 17 recovery-domain policy (CC-exempt)", labels)
+        self.assertEqual(
+            comparison["selection_policy"]["domain"], "recovery_exempt"
+        )
+        self.assertIn("recovery_aggregate", comparison)
+
     def test_admission_profile_builds_three_arms_and_no_recovery_metrics(
         self,
     ) -> None:

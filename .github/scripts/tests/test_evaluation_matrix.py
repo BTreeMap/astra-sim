@@ -25,6 +25,9 @@ GATE_INPUTS = {
 # The closed sum the provision job validates and ci/dcs/evaluate.sh dispatches
 # on. Nothing downstream of that validation branches on anything else.
 KINDS = {"comparison", "single", "smoke"}
+# The shedding domains that decide after a switch has trimmed a packet. Each
+# adds a fourth arm to a comparison, which is what sizes the job budget.
+FORGIVING_DOMAINS = {"recovery", "recovery_exempt"}
 REQUIRED_KEYS = {
     "name",
     "profile",
@@ -47,7 +50,7 @@ def expected_arm_count(record: dict[str, object]) -> int:
 
     A single or smoke record runs one. A comparison builds fixed-low,
     fixed-high, and the phase-aware policy, plus a fourth recovery arm when
-    the profile names the recovery domain.
+    the profile names a domain that decides after the trim.
     """
     if record["kind"] != "comparison":
         return 1
@@ -55,7 +58,7 @@ def expected_arm_count(record: dict[str, object]) -> int:
         (REPOSITORY_ROOT / record["profile"]).read_text(encoding="utf-8")
     )
     domain = profile.get("selection_policy", {}).get("domain", "admission")
-    return 4 if domain == "recovery" else 3
+    return 4 if domain in FORGIVING_DOMAINS else 3
 
 
 def records() -> list[dict[str, object]]:
