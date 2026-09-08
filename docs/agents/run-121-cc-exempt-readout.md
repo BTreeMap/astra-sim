@@ -1,9 +1,9 @@
 # Run #121: bounded loss as a third congestion response
 
 Run 34156878678, commit `8dc9275`, release `b363b3rri7pbgbaudfh3tbnysiranl66`,
-six of six comparisons collected, three seeds per cell. Design and
-pre-registration in [cc-exempt-forgiveness-design.md](cc-exempt-forgiveness-design.md);
-the map that pointed here in [run-120-regime-map.md](run-120-regime-map.md).
+six of six comparisons collected, three seeds per cell. The protocol as built is in
+[forgive-protocol.md](forgive-protocol.md); the map that pointed here in
+[run-120-regime-map.md](run-120-regime-map.md).
 Written 2026-09-08.
 
 ## The claim
@@ -131,11 +131,11 @@ reached it while losing 9 % of the DP bytes instead of 32 %.
 | 9550582 | exempt | 1343 ms | 18.7 ms | 21.6 ms | 78 ms | 0.0049 | 0.0025 | 1.0 % | 1.7 M | 3.9 M |
 | 9550582 | fixed-high | 1280 ms | 16.4 ms | 13.0 ms | 42 ms | 0.0011 | 0.0011 | 40.1 % | 1.7 M | 0 |
 
-The design said this cell "must not move", on the reasoning that a fabric
+The pre-registration said this cell "must not move", on the reasoning that a fabric
 that barely trims gives the mechanism nothing to act on. That reasoning
 was wrong and the rule is withdrawn, not reinterpreted: DCQCN takes 3.3
-million rate cuts here from ECN marks alone, and the design's own
-section 0 is the argument that the exemption acts on those. It did. The
+million rate cuts here from ECN marks alone, and the protocol's own
+reasoning (ECN marks precede trims) says the exemption acts on those. It did. The
 window moved 4 %, trims doubled (all of the increase forgiven), and the
 burst drained 5 to 22 % slower. The lesson is the honest shape of the
 mechanism: where the fabric is barely congested the exemption's price is
