@@ -427,7 +427,22 @@ overall because forgiven ranges are never retransmitted.
 - The switch has no steering role. Drop-precedence steering would only be
   an efficiency option, with no authority over acceptance.
 
-## 13. Where the code lives
+## 13. Relation to prior work
+
+Receiver-side bounded loss for gradient traffic exists: MLT (NSDI 2024)
+stops retransmission once a fixed fraction of a tensor has arrived, LTP
+(2023) closes a round early on network conditions, OptiReduce (NSDI 2025)
+bounds a round by a timeout, and trimmable gradients (HotNets 2024) make a
+trimmed packet a compressed gradient with no retransmission at all. What
+this protocol adds over them is the per-range verdict driven by the
+switch's trim report, the budget per rank and step with the critical
+steps held tight, and the per-flow, budget-bounded, self-revoking
+congestion-control exemption. The comparison table, the null searches
+that support the "not found" claims, and what the literature says about
+the tolerance and DCQCN assumptions are in
+[forgive-related-work.md](forgive-related-work.md).
+
+## 14. Where the code lives
 
 | piece | file |
 | --- | --- |
