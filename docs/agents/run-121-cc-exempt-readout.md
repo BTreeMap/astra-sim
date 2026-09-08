@@ -109,30 +109,85 @@ need them removed. Where nothing is congested, the exemption's price is
 low and its return is low; the seed spread of the exempt arm (1343 to
 1354 ms) is tighter than admission's spread at the worst cell.
 
-## What this settles and what it does not
+## Contribution
 
-Settled, within three seeds per cell:
+Same fabric (DCQCN, direct7, 4:1), three ways to pay for overload, plus
+the blind alternative at the same budget:
 
-- Loss instead of slowdown is a real mechanism on a DCQCN fabric. It
-  recovers about half the CC penalty at the worst cell, spends a quarter
-  of the bytes admission shedding spends, touches no critical step, and
-  leaves the burst inside seed noise.
-- Against admission at equal budget the exempt arm's window is shorter
-  in every seed, by 1 to 3 %, about the size of admission's own seed
-  spread. The claim is efficiency per lost byte and targeting; the window
-  edge is a consistent sign, not a headline.
+| response | window | bytes re-carried | bytes lost | seeds |
+| --- | ---: | ---: | ---: | ---: |
+| no congestion control, repair everything | 1367 ms | 24 % of offered (W) | none | 1 (run #120) |
+| DCQCN | 1686 to 1690 ms | 3 % | none | 3 |
+| DCQCN + exempt forgiveness, budget 0.4 | 1459 to 1468 ms | 1 % (W') | 2.2 % of offered, 8.8 to 9.5 % of DP, none on CLR steps | 3 |
+| DCQCN + blind admission shedding, budget 0.4 | 1480 to 1509 ms | 2 % | 7.7 % of offered, 32 % of DP | 3 |
 
-Not settled:
+This is not a point between "retransmit everything" and "slow down". It
+is a third axis. Without congestion control the fabric pays in
+re-carried bytes; with DCQCN it pays in time; with the exemption it pays
+in bounded, phase-placed loss, gets back about half the time DCQCN
+costs, and keeps DCQCN's re-carry.
 
-- Any seed beyond three per cell.
-- Whether the tolerance claim holds at 9.5 % loss of DP bytes on non-CLR
-  steps for a current model. That is claim 4 of the review of 2026-09-07
-  and needs GPUs.
-- NSCC. The exemption ignores DCQCN's CNP; NSCC is window-based with a
-  trim-triggered quick_adapt, and no model of it exists here.
-- Multi-tenant fairness. Exempt flows share this fabric only with their
-  own job's TP, PP, and one burst; against another tenant's CC-obeying
-  flows the price would land on the tenant.
+### Verified here
+
+In the simulator, under DCQCN, at 64 ranks, three seeds per cell:
+
+1. The third operating point exists. Window 13 % shorter than DCQCN at
+   the worst cell (rule asked for 5), critical-step spans unmoved, burst
+   drain inside seed noise, W' 0.010.
+2. Loss spent where the fabric trimmed beats loss spent blind. At the
+   same budget the exempt arm loses 3.4x fewer DP bytes than admission
+   shedding, its window is shorter in every seed (by 0.8 to 2.7 %, about
+   admission's seed spread), and it never touches a critical step, which
+   fixed-high does.
+3. The mechanism is minimal and lawful. Sender-only: one answer at
+   queue-pair birth, the receiver's existing PULL as the re-arm, no wire
+   change, no receiver change. The per-(rank, step) budget law held in
+   all 3840 ledger cells.
+4. The negatives that motivate it, from runs #117 and #120: the relief
+   measured under go-back-N was the transport's own amplification (up to
+   79x re-carry); under selective repair the incast episode costs under
+   1 % of the window at every point of a 2x2x2 map, so admission-time
+   tolerance has nothing to shorten; repair-round forgiveness has an
+   arithmetic ceiling under 0.2 % of DP span.
+5. The map: trimming multiplies by DP fan-in (2.7x) and oversubscription
+   (5.5x); DCQCN buys an 8 to 10x cut in W with 18 to 24 % of the window.
+
+### Not verified
+
+- Tolerance. That a current model survives 9 % loss of DP gradient bytes
+  on non-critical steps is assumed from DBLP's evidence (EfficientNet,
+  ResNet) and Weintraub 2025 (10 % uniform loss on Llama2 7B, no phase
+  test). Needs GPUs. Until then every claim above reads "at a budget the
+  model is assumed to tolerate".
+- Congestion control currency. DCQCN is what the model has; Meta runs
+  its 400G fabrics with DCQCN off and UEC's default is NSCC. The
+  exemption's idea transfers to any CC that reacts to trims and marks,
+  but nothing here measures NSCC.
+- Fairness. Exempt flows shared this fabric only with their own job's TP
+  and one burst. Against another tenant's CC-obeying flows the price
+  lands on the tenant, and nothing here measures it.
+- Scale and workload shape. 64 ranks with TP on the fabric; in a current
+  deployment TP stays on NVLink and the fabric carries DP and PP only,
+  which would raise the eligible share from 24 % to most of the bytes.
+
+## Next stages
+
+Ordered by cost. Each names its instrument and the outcome that ends it.
+
+| stage | question | instrument | cost | kill test |
+| --- | --- | --- | --- | --- |
+| 1. Dose front | How does the trade move with the budget? | worst cell, p_high {0.1, 0.2, 0.4, 0.6}, exempt and admission arms, 3 seeds, 24 arms | one cluster day | window flat above p 0.2 |
+| 2. No-CC cell | Does forgiveness also buy back re-carry where there is no CC to exempt? | none/direct7/4:1, CC-neutral recovery domain, 3 seeds, 12 arms | half a cluster day | W' within seed noise of W |
+| 3. Fairness | What does the exempt job cost a CC-obeying neighbour? | one profile with a second tenant's flows on the same spines, 3 seeds, 12 arms | a day of generator work plus a wave | tenant's DP span grows by more than the exempt job's shrinks |
+| 4. Workload currency | Does the ceiling rise when the fabric carries DP only? | TP in NVLink, FSDP reduce-scatter plus all-gather bytes, re-sized oversubscription so the fabric stays the bottleneck | generator work plus one map plus one wave | gain does not scale with the eligible share |
+| 5. NSCC | Does the idea transfer to a window-based CC with trim-triggered quick_adapt? | an NSCC model in rdma-hw.cc, calibrated against the UEC spec defaults | weeks | exempt gain under 5 % of window |
+| 6. Tolerance | Does a current model survive 9 % non-CLR DP loss? | real training of a small current model with injected bucket loss under the ledger law | GPUs | loss curve diverges |
+
+Stages 1 and 2 sharpen the same figure, the loss-versus-time front, and
+are the next wave. Stages 3 and 4 are the two objections a reviewer
+raises first. Stage 5 decides whether the claim can say more than
+"DCQCN". Stage 6 is the claim the whole line rests on and the only one
+this cluster cannot run.
 
 ## The courier that was re-minted
 
