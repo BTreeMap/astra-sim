@@ -15,12 +15,13 @@ WORKFLOW = REPOSITORY_ROOT / ".github/workflows/workflow_main.yml"
 
 # Every gate the plan step selects on. Each one is a family a dispatch can run
 # alone, so each one owns a workflow_dispatch boolean and a jq selector.
-GATES = {"always", "structural", "regime_map", "forgive"}
+GATES = {"always", "structural", "regime_map", "forgive", "forgive_dose"}
 GATE_INPUTS = {
     "always": "run_always",
     "structural": "run_structural_studies",
     "regime_map": "run_regime_map",
     "forgive": "run_forgive_studies",
+    "forgive_dose": "run_forgive_dose",
 }
 # The closed sum the provision job validates and ci/dcs/evaluate.sh dispatches
 # on. Nothing downstream of that validation branches on anything else.

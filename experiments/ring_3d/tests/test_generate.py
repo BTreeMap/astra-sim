@@ -425,6 +425,10 @@ class Ring3DGeneratorTests(unittest.TestCase):
             | {
                 "regime_64_dcqcn_direct7_4to1_exempt.json",
                 "regime_64_dcqcn_direct2_2to1_exempt.json",
+            }
+            | {
+                f"regime_64_dcqcn_direct7_4to1_exempt_{tag}.json"
+                for tag in ("p01", "p02", "p06", "allsteps")
             },
         )
 
